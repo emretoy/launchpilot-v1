@@ -1842,6 +1842,23 @@ export function AnalysisResultView({ data }: { data: FullAnalysisResult }) {
             </div>
           </section>
         )}
+
+        {/* Blog Yaz CTA */}
+        <div className="mt-6 rounded-xl border-2 border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 p-6 text-center">
+          <p className="text-lg font-bold text-gray-900 mb-1">
+            Siteniz için blog yazısı oluşturun
+          </p>
+          <p className="text-sm text-gray-600 mb-4">
+            AI, sitenize ve sektörünüze özel blog yazısı hazırlasın. Konu seçin, gerisini biz halledelim.
+          </p>
+          <button
+            onClick={() => { window.location.href = "/blog-yaz"; }}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors cursor-pointer"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.855z"/></svg>
+            Siteniz İçin Blog Yazın
+          </button>
+        </div>
       </TabsContent>
 
       {/* ═══════════════════════════════════════════════════════════════

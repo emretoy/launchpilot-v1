@@ -49,7 +49,14 @@ export function UrlInput() {
       // Store result in sessionStorage and navigate
       sessionStorage.setItem("analysisResult", JSON.stringify(data));
       sessionStorage.setItem("analyzedUrl", url.trim());
-      router.push("/analyze");
+
+      // Domain çıkar ve cache'e kaydet
+      const inputUrl = url.trim().startsWith("http") ? url.trim() : `https://${url.trim()}`;
+      const domain = new URL(inputUrl).hostname.replace(/^www\./, "");
+      sessionStorage.setItem(`scanCache_${domain}`, JSON.stringify(data));
+
+      // Yeni site sayfasına yönlendir
+      router.push(`/site/${encodeURIComponent(domain)}/overview`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -72,10 +79,10 @@ export function UrlInput() {
           {loading ? (
             <span className="flex items-center gap-2">
               <Spinner />
-              Taranıyor...
+              Scanning...
             </span>
           ) : (
-            "Analiz Et"
+            "Scan Now"
           )}
         </Button>
       </div>
@@ -84,7 +91,7 @@ export function UrlInput() {
       )}
       {loading && (
         <p className="text-muted-foreground text-sm mt-3">
-          Site taranıyor, 8 farklı analiz paralel çalışıyor... Bu işlem biraz sürebilir.
+          Scanning your website with 8+ parallel analyzers... This may take a moment.
         </p>
       )}
     </form>

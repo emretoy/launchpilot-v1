@@ -539,6 +539,71 @@ export interface BlogAuthorityReport {
   actionPlan: string[];
 }
 
+// ── Task (Görev Yönetimi) ──
+export interface Task {
+  id: string;
+  user_id: string;
+  domain: string;
+  category: string;
+  priority: "critical" | "high" | "medium" | "low";
+  title: string;
+  description: string;
+  how_to: string;
+  effort: "Kolay" | "Orta" | "Zor";
+  recommendation_key: string;
+  status: "pending" | "completed" | "verified" | "regressed";
+  completed_at: string | null;
+  verified_at: string | null;
+  scan_id: string | null;
+  created_at: string;
+}
+
+// ── Blog Topic Scanner Types ──
+
+export interface BlogTopic {
+  id: string;
+  user_id: string;
+  domain: string;
+  title: string;
+  description: string | null;
+  source: string;
+  source_detail: string | null;
+  relevance_score: number;
+  difficulty: "Kolay" | "Orta" | "Zor";
+  search_volume: "Düşük" | "Orta" | "Yüksek";
+  category: string | null;
+  keywords: string[];
+  suggested_format: string | null;
+  status: "suggested" | "planned" | "writing" | "published" | "rejected";
+  planned_date: string | null;
+  scan_id: string | null;
+  created_at: string;
+}
+
+export interface BlogTopicScanRequest {
+  domain: string;
+  industry: string;
+  siteType: string;
+  language: string;
+  country: string;
+  brandName: string;
+  dnaSummary: string | null;
+  blogAuthorityScore: number | null;
+}
+
+export interface BlogTopicScanResult {
+  topics: BlogTopic[];
+  sourceStats: {
+    autocomplete: number;
+    paa: number;
+    reddit: number;
+    competitor: number;
+    trends: number;
+    ai: number;
+  };
+  scanDuration: number;
+}
+
 // ── Full Analysis Result (Part 1 — yeni her şey dahil) ──
 export interface FullAnalysisResult {
   crawl: CrawlResult;

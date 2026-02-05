@@ -1,0 +1,42 @@
+import { NextResponse } from "next/server";
+import { buildRecommendPrompt, callGemini } from "@/lib/blog-generator";
+import type { BlogSiteContext } from "@/lib/blog-generator";
+
+export async function POST(req: Request) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json({ error: "API key eksik" }, { status: 500 });
+  }
+
+  try {
+    const body = await req.json();
+    const { topic, siteContext } = body as {
+      topic: string;
+      siteContext: BlogSiteContext;
+    };
+
+    if (!topic || !siteContext) {
+      return NextResponse.json({ error: "Konu ve site bilgisi gerekli" }, { status: 400 });
+    }
+
+    const prompt = buildRecommendPrompt(topic, siteContext);
+    const raw = await callGemini(prompt, apiKey, {
+      temperature: 0.5,
+      maxOutputTokens: 512,
+      timeoutMs: 10000,
+    });
+
+    if (!raw) {
+      return NextResponse.json({ error: "AI tavsiyesi alınamadı" }, { status: 500 });
+    }
+
+    // JSON parse — Gemini bazen markdown code fence ekliyor
+    const cleaned = raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    const recommendation = JSON.parse(cleaned);
+
+    return NextResponse.json(recommendation);
+  } catch (err) {
+    console.error("Blog recommend error:", err);
+    return NextResponse.json({ error: "Tavsiye oluşturulamadı" }, { status: 500 });
+  }
+}

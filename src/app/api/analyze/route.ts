@@ -27,6 +27,7 @@ import {
   checkWaybackHistory,
   analyzeOnlinePresence,
 } from "@/lib/online-presence";
+import { syncTasksFromScan } from "@/lib/task-sync";
 import type { FullAnalysisResult, OnlinePresenceResult } from "@/lib/types";
 
 function normalizeUrl(input: string): string {
@@ -239,32 +240,67 @@ export async function POST(request: NextRequest) {
     // Supabase'e kaydet (fire-and-forget — response'u geciktirmesin)
     const recommendationKeys = recommendations.map(normalizeRecKey);
     const supabaseAdmin = getServiceSupabase();
-    supabaseAdmin
-      .from("scans")
-      .insert({
-        domain,
-        url: normalizedUrl,
-        overall_score: validatedScoring.overall,
-        category_scores: {
-          performance: validatedScoring.categories.performance.score,
-          seo: validatedScoring.categories.seo.score,
-          security: validatedScoring.categories.security.score,
-          accessibility: validatedScoring.categories.accessibility.score,
-          bestPractices: validatedScoring.categories.bestPractices.score,
-          domainTrust: validatedScoring.categories.domainTrust.score,
-          content: validatedScoring.categories.content.score,
-          technology: validatedScoring.categories.technology.score,
-          onlinePresence: validatedScoring.categories.onlinePresence.score,
-        },
-        recommendation_keys: recommendationKeys,
-        recommendations_count: recommendations.length,
-        duration,
-        analyzed_at: analyzedAt,
-        user_id: userId,
-      })
-      .then(({ error }) => {
-        if (error) console.error("Supabase insert error:", error);
-      });
+
+    const baseInsertData = {
+      domain,
+      url: normalizedUrl,
+      overall_score: validatedScoring.overall,
+      category_scores: {
+        performance: validatedScoring.categories.performance.score,
+        seo: validatedScoring.categories.seo.score,
+        security: validatedScoring.categories.security.score,
+        accessibility: validatedScoring.categories.accessibility.score,
+        bestPractices: validatedScoring.categories.bestPractices.score,
+        domainTrust: validatedScoring.categories.domainTrust.score,
+        content: validatedScoring.categories.content.score,
+        technology: validatedScoring.categories.technology.score,
+        onlinePresence: validatedScoring.categories.onlinePresence.score,
+      },
+      recommendation_keys: recommendationKeys,
+      recommendations_count: recommendations.length,
+      duration,
+      analyzed_at: analyzedAt,
+      user_id: userId,
+    };
+
+    // result_json ile dene, başarısızsa onsuz dene
+    async function saveScan() {
+      // İlk deneme: result_json dahil
+      const { data: scanRow, error } = await supabaseAdmin
+        .from("scans")
+        .insert({ ...baseInsertData, result_json: result })
+        .select("id")
+        .single();
+
+      if (!error && scanRow) {
+        // Task sync
+        if (userId) {
+          syncTasksFromScan(supabaseAdmin, userId, domain, recommendations, scanRow.id, result)
+            .catch((err) => console.error("Task sync error:", err));
+        }
+        return;
+      }
+
+      // result_json kolonu yoksa fallback: onsuz kaydet
+      console.error("Scan insert with result_json failed:", error?.message);
+      const { data: fallbackRow, error: fallbackErr } = await supabaseAdmin
+        .from("scans")
+        .insert(baseInsertData)
+        .select("id")
+        .single();
+
+      if (fallbackErr) {
+        console.error("Scan insert fallback also failed:", fallbackErr.message);
+        return;
+      }
+
+      if (userId && fallbackRow) {
+        syncTasksFromScan(supabaseAdmin, userId, domain, recommendations, fallbackRow.id, result)
+          .catch((err) => console.error("Task sync error:", err));
+      }
+    }
+
+    saveScan().catch((err) => console.error("Save scan error:", err));
 
     return NextResponse.json(result);
   } catch (err) {
