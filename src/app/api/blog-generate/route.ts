@@ -4,6 +4,7 @@ import {
   callGemini,
   parseImagePlaceholders,
   parseTitleAndMeta,
+  ensureHtml,
   humanizeHtml,
 } from "@/lib/blog-generator";
 import type { BlogGenerateRequest } from "@/lib/blog-generator";
@@ -35,14 +36,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Blog metni üretilemedi" }, { status: 500 });
     }
 
-    // Parse title & meta
+    // Parse title & meta (ham çıktıdan)
     const { title, metaDesc } = parseTitleAndMeta(raw);
 
-    // Parse image placeholders
+    // Parse image placeholders (ham çıktıdan)
     const imageDescriptions = parseImagePlaceholders(raw);
 
-    // Humanize HTML
-    const blogHtml = humanizeHtml(raw);
+    // Markdown → HTML fallback + humanize
+    const asHtml = ensureHtml(raw);
+    const blogHtml = humanizeHtml(asHtml);
 
     // SEO checklist
     const seoChecklist = [
@@ -56,12 +58,15 @@ export async function POST(req: Request) {
 
     // Format label
     const formatLabels: Record<string, string> = {
-      "problem-solution": "Adım Adım Rehber",
-      pillar: "Kapsamlı Kılavuz",
-      "case-study": "Başarı Hikayesi",
-      comparison: "Karşılaştırma",
-      checklist: "Kontrol Listesi",
-      faq: "Soru-Cevap",
+      "problem-solution": "Problem-Çözüm",
+      rehber: "Kapsamlı Kılavuz",
+      "vaka-calismasi": "Başarı Hikayesi",
+      karsilastirma: "Karşılaştırma",
+      "kontrol-listesi": "Kontrol Listesi",
+      sss: "Soru-Cevap",
+      liste: "Liste",
+      hikaye: "Hikaye",
+      "teknik-analiz": "Teknik Analiz",
     };
 
     return NextResponse.json({
@@ -72,6 +77,7 @@ export async function POST(req: Request) {
       suggestedMetaDesc: metaDesc,
       chosenFormat: formatLabels[body.format] || body.format,
       error: null,
+      _prompt: prompt,
     });
   } catch (err) {
     console.error("Blog generate error:", err);

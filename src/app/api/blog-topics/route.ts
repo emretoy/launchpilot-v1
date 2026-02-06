@@ -33,11 +33,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Taramayı çalıştır
-    const result = await scanBlogTopics(body);
-
-    // Sonuçları Supabase'e kaydet — chunk halinde (tek seferde hata olursa kısmen kurtulsun)
+    // Mevcut konuları çek (exclusion listesi + eski suggested temizliği için)
     const supabase = getServiceSupabase();
+
+    const { data: existingTopics } = await supabase
+      .from("blog_topics")
+      .select("title, status")
+      .eq("user_id", userId)
+      .eq("domain", body.domain)
+      .in("status", ["planned", "writing", "published"]);
+
+    const existingTopicTitles = (existingTopics || []).map((t: { title: string }) => t.title);
+
+    // Taramayı çalıştır (mevcut konuları exclusion olarak geçir)
+    const result = await scanBlogTopics(body, existingTopicTitles);
+
     const scanId = crypto.randomUUID();
     let insertedCount = 0;
 
@@ -59,8 +69,20 @@ export async function POST(request: NextRequest) {
           category: t.category,
           keywords: t.keywords,
           suggested_format: t.suggested_format,
+          source_evidence: t.source_evidence,
+          country: body.country,
+          language: body.language,
           status: "suggested",
           scan_id: scanId,
+          // v2.3 fields
+          content_type: t.content_type || "standalone",
+          sub_topics: t.sub_topics || [],
+          is_niche_opportunity: t.is_niche_opportunity || false,
+          funnel_stage: t.funnel_stage || "TOFU",
+          search_intent: t.search_intent || "informational",
+          target_persona: t.target_persona || "",
+          suggested_cta: t.suggested_cta || "",
+          best_publishing_quarter: t.best_publishing_quarter || "Evergreen",
         }));
 
         const { error: insertError } = await supabase
@@ -86,22 +108,58 @@ export async function POST(request: NextRequest) {
       }
 
       console.log(`Supabase: ${insertedCount}/${result.topics.length} konu kaydedildi.`);
+
+      // Eski suggested konuları sil (yeni scan başarılı olduysa)
+      if (insertedCount > 0) {
+        const { error: deleteError } = await supabase
+          .from("blog_topics")
+          .delete()
+          .eq("user_id", userId)
+          .eq("domain", body.domain)
+          .eq("status", "suggested")
+          .neq("scan_id", scanId);
+
+        if (deleteError) {
+          console.error("Eski suggested konular silinemedi:", deleteError.message);
+        } else {
+          console.log("Eski suggested konular temizlendi.");
+        }
+      }
     }
 
     // Supabase'den güncel verileri çek (ID'ler dahil)
-    const { data: savedTopics } = await supabase
-      .from("blog_topics")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("domain", body.domain)
-      .eq("scan_id", scanId)
-      .order("relevance_score", { ascending: false });
+    // Önce bu scan'in konularını dene, yoksa domain'in tüm konularını çek
+    let savedTopics: Record<string, unknown>[] | null = null;
+
+    if (insertedCount > 0) {
+      const { data } = await supabase
+        .from("blog_topics")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("domain", body.domain)
+        .eq("scan_id", scanId)
+        .order("relevance_score", { ascending: false });
+      savedTopics = data;
+    }
+
+    // Scan ID ile bulunamazsa domain bazlı çek (hepsi gelsin)
+    if (!savedTopics || savedTopics.length === 0) {
+      const { data } = await supabase
+        .from("blog_topics")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("domain", body.domain)
+        .neq("status", "rejected")
+        .order("relevance_score", { ascending: false });
+      savedTopics = data;
+    }
 
     return NextResponse.json({
-      topics: savedTopics && savedTopics.length > 0 ? savedTopics : result.topics,
+      topics: savedTopics || [],
       sourceStats: result.sourceStats,
       scanDuration: result.scanDuration,
       persisted: insertedCount > 0,
+      _prompt: result._prompt || null,
     });
   } catch (err) {
     console.error("Blog topic scan error:", err);
@@ -122,6 +180,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const domain = searchParams.get("domain");
+    const status = searchParams.get("status");
 
     if (!domain) {
       return NextResponse.json({ error: "domain parametresi zorunlu." }, { status: 400 });
@@ -129,13 +188,19 @@ export async function GET(request: NextRequest) {
 
     const supabase = getServiceSupabase();
 
-    const { data, error } = await supabase
+    let query = supabase
       .from("blog_topics")
       .select("*")
       .eq("user_id", userId)
-      .eq("domain", domain)
-      .neq("status", "rejected")
-      .order("relevance_score", { ascending: false });
+      .eq("domain", domain);
+
+    if (status) {
+      query = query.eq("status", status);
+    } else {
+      query = query.neq("status", "rejected");
+    }
+
+    const { data, error } = await query.order("relevance_score", { ascending: false });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });

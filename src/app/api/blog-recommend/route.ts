@@ -21,8 +21,8 @@ export async function POST(req: Request) {
 
     const prompt = buildRecommendPrompt(topic, siteContext);
     const raw = await callGemini(prompt, apiKey, {
-      temperature: 0.5,
-      maxOutputTokens: 512,
+      temperature: 0.8,
+      maxOutputTokens: 1024,
       timeoutMs: 10000,
     });
 
@@ -34,7 +34,7 @@ export async function POST(req: Request) {
     const cleaned = raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
     const recommendation = JSON.parse(cleaned);
 
-    return NextResponse.json(recommendation);
+    return NextResponse.json({ ...recommendation, _prompt: prompt });
   } catch (err) {
     console.error("Blog recommend error:", err);
     return NextResponse.json({ error: "Tavsiye oluşturulamadı" }, { status: 500 });

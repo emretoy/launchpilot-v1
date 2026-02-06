@@ -9,6 +9,15 @@ export interface BlogSiteContext {
   primaryLanguage: string | null;
   platform: string | null;
   blogAuthorityScore: number | null;
+  // v3 aiAnalysis alanları (optional, geriye uyumlu)
+  targetAudience?: string | null;
+  blogTone?: string | null;
+  blogRole?: string | null;
+  priorityTopics?: string[];
+  topicsToAvoid?: string[];
+  recommendedContentTypes?: string[];
+  recommendedCta?: string | null;
+  valueProposition?: string | null;
 }
 
 export interface BlogRecommendation {
@@ -17,34 +26,57 @@ export interface BlogRecommendation {
   reasons: string[];
   recommendedLength: number;
   lengthReason: string;
+  structure_tip: string;
 }
 
 export type BlogContentType =
   | "problem-solution"
-  | "pillar"
-  | "case-study"
-  | "comparison"
-  | "checklist"
-  | "faq";
+  | "rehber"
+  | "vaka-calismasi"
+  | "karsilastirma"
+  | "kontrol-listesi"
+  | "sss"
+  | "liste"
+  | "hikaye"
+  | "teknik-analiz";
 
 export const BLOG_FORMAT_OPTIONS: {
   value: BlogContentType;
   label: string;
   description: string;
 }[] = [
-  { value: "problem-solution", label: "Adım Adım Rehber", description: "Bir sorunu adım adım çözer" },
-  { value: "pillar", label: "Kapsamlı Kılavuz", description: "Konuyu baştan sona anlatır" },
-  { value: "case-study", label: "Başarı Hikayesi", description: "Gerçek bir deneyimi paylaşır" },
-  { value: "comparison", label: "Karşılaştırma", description: "İki seçeneği yan yana koyar" },
-  { value: "checklist", label: "Kontrol Listesi", description: "Yapılacakları madde madde sıralar" },
-  { value: "faq", label: "Soru-Cevap", description: "En çok sorulan soruları yanıtlar" },
+  { value: "problem-solution", label: "Problem-Çözüm", description: "Bir sorunu adım adım çözer" },
+  { value: "rehber", label: "Kapsamlı Kılavuz", description: "Konuyu baştan sona anlatır" },
+  { value: "vaka-calismasi", label: "Başarı Hikayesi", description: "Gerçek bir deneyimi paylaşır" },
+  { value: "karsilastirma", label: "Karşılaştırma", description: "İki seçeneği yan yana koyar" },
+  { value: "kontrol-listesi", label: "Kontrol Listesi", description: "Yapılacakları madde madde sıralar" },
+  { value: "sss", label: "Soru-Cevap", description: "En çok sorulan soruları yanıtlar" },
+  { value: "liste", label: "Liste", description: "En iyi X, X önerileri gibi sıralama içerikleri" },
+  { value: "hikaye", label: "Hikaye", description: "Marka hikayesi, kişisel deneyim, ilham verici anlatım" },
+  { value: "teknik-analiz", label: "Teknik Analiz", description: "Derinlemesine teknik içerik, veri odaklı, uzman kitle" },
 ];
+
+// ── Legacy Format Normalizer (eski DB key → yeni key) ──
+
+const LEGACY_FORMAT_MAP: Record<string, BlogContentType> = {
+  pillar: "rehber",
+  "case-study": "vaka-calismasi",
+  comparison: "karsilastirma",
+  checklist: "kontrol-listesi",
+  faq: "sss",
+};
+
+export function normalizeLegacyFormat(fmt: string | null | undefined): string {
+  if (!fmt) return "problem-solution";
+  return LEGACY_FORMAT_MAP[fmt] || fmt;
+}
 
 export interface BlogGenerateRequest {
   topic: string;
   format: BlogContentType;
   targetLength: number;
   siteContext: BlogSiteContext;
+  language?: string;
 }
 
 export interface BlogGenerateResult {
@@ -83,8 +115,8 @@ export interface BlogScoreCriterion {
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
-const IMAGEN_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict";
+const KIE_CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask";
+const KIE_POLL_URL = "https://api.kie.ai/api/v1/jobs/recordInfo";
 
 // ── Topic Suggestions ──
 
@@ -164,47 +196,222 @@ export function suggestTopics(siteContext: BlogSiteContext): string[] {
 
 // ── Recommend Prompt Builder ──
 
-export function buildRecommendPrompt(topic: string, siteContext: BlogSiteContext): string {
-  return `Sen bir blog stratejistisin. Aşağıdaki site ve konu bilgisine göre en uygun blog formatını ve uzunluğunu öner.
+export function buildRecommendPrompt(topic: string, siteContext: BlogSiteContext, topicData?: Record<string, unknown>): string {
+  const dnaAnalysisJSON = JSON.stringify({
+    brand: siteContext.brandName,
+    site_type: siteContext.siteType,
+    industry: siteContext.industry || "genel",
+    blog_authority_score: siteContext.blogAuthorityScore,
+    target_audience: siteContext.targetAudience || null,
+    blog_tone: siteContext.blogTone || null,
+    blog_role: siteContext.blogRole || null,
+    value_proposition: siteContext.valueProposition || null,
+    recommended_cta: siteContext.recommendedCta || null,
+  }, null, 2);
 
-SİTE BİLGİLERİ:
-- Marka: ${siteContext.brandName}
-- Site türü: ${siteContext.siteType}
-- Sektör: ${siteContext.industry || "bilinmiyor"}
-- Blog otorite skoru: ${siteContext.blogAuthorityScore ?? "bilinmiyor"}/100
+  const topicJSON = JSON.stringify(topicData || { title: topic }, null, 2);
 
-KONU: "${topic}"
+  return `Sen bir blog format ve uzunluk uzmanısın.
+Verilen TEK bir konu için EN UYGUN format ve kelime sayısını belirle.
 
-FORMAT SEÇENEKLERİ:
-1. problem-solution (Adım Adım Rehber) — Bir sorunu adım adım çözer
-2. pillar (Kapsamlı Kılavuz) — Konuyu baştan sona anlatır
-3. case-study (Başarı Hikayesi) — Gerçek bir deneyimi paylaşır
-4. comparison (Karşılaştırma) — İki seçeneği yan yana koyar
-5. checklist (Kontrol Listesi) — Yapılacakları madde madde sıralar
-6. faq (Soru-Cevap) — En çok sorulan soruları yanıtlar
+═══════════════════════════════════════
+SİTE DNA ANALİZİ (ÖZET)
+═══════════════════════════════════════
+${dnaAnalysisJSON}
 
-KURALLAR:
-- Blog otorite skoru düşükse (0-30): kısa format öner (600-1200 kelime), basit yapı
-- Blog otorite skoru ortaysa (31-60): orta uzunluk (1200-2000 kelime)
-- Blog otorite skoru yüksekse (61+) veya konu genişse: kapsamlı (2000+ kelime)
-- Sektöre ve konuya en uygun formatı seç
-- Basit Türkçe kullan, teknik terim kullanma
-- Tavsiyelerini müşteri bakkal, kuaför, kasap gibi düşün — onlara anlatır gibi yaz
+DNA'yı şu kararlar için kullan:
+- target_audience → B2B ise teknik/profesyonel formatlar
+  (vaka-calismasi, teknik-analiz) ağırlıklı olabilir.
+  B2C ise erişilebilir formatlar (liste, rehber, hikaye) ağırlıklı.
+- blog_tone → format tonu bununla uyumlu olmalı
+- awareness_level → Unaware kitle için kısa/basit formatlar,
+  Product-Aware kitle için detaylı/karşılaştırmalı formatlar
 
-CEVAP FORMATI (sadece JSON, başka bir şey yazma):
+═══════════════════════════════════════
+KONU
+═══════════════════════════════════════
+${topicJSON}
+
+Konuda şu alanlar zaten var — bunları KULLAN:
+- title → konunun başlığı
+- funnel_stage → TOFU/MOFU/BOFU
+- search_intent → informational/commercial/navigational/transactional
+- suggestedFormat → önceki adımın kaba format tahmini (referans al ama
+  körü körüne kopyalama, kendi analizini yap)
+- difficulty → Kolay/Orta/Zor
+- content_type → pillar/standalone
+- target_persona → kime yazılıyor
+
+═══════════════════════════════════════
+FORMAT SEÇENEKLERİ (9 ADET)
+═══════════════════════════════════════
+
+1. problem-solution
+   Label: Problem-Çözüm
+   Ne zaman: "Nasıl yapılır?" sorusu, bir sorunu çözen konular
+   Örnek: "WordPress hızlandırma", "Küçük odayı geniş gösterme"
+   Tipik uzunluk: 800-1500 kelime
+
+2. rehber
+   Label: Kapsamlı Kılavuz
+   Ne zaman: Geniş, kapsamlı, ansiklopedik konular. A'dan Z'ye anlatım.
+   Örnek: "Dijital pazarlama rehberi", "Ev dekorasyonu başlangıç rehberi"
+   Tipik uzunluk: 1500-2500 kelime
+   ⚠️ SADECE gerçekten geniş konularda kullan. Dar konularda KULLANMA.
+
+3. vaka-calismasi
+   Label: Başarı Hikayesi
+   Ne zaman: Deneyim, sonuç paylaşımı, müşteri başarı hikayesi
+   Örnek: "X firması ile satışları %200 artırdık"
+   Tipik uzunluk: 1000-2000 kelime
+
+4. karsilastirma
+   Label: Karşılaştırma
+   Ne zaman: İki veya daha fazla şey kıyaslanıyorsa, "hangisi daha iyi"
+   Örnek: "WordPress vs Wix", "Masif ahşap vs MDF"
+   Tipik uzunluk: 1200-2000 kelime
+
+5. kontrol-listesi
+   Label: Kontrol Listesi
+   Ne zaman: Adım adım kontrol edilebilecek konular
+   Örnek: "SEO kontrol listesi", "Ev taşıma rehberi"
+   Tipik uzunluk: 600-1200 kelime
+
+6. sss
+   Label: Soru-Cevap
+   Ne zaman: Sıkça sorulan sorular, bilgilendirici kısa yanıtlar
+   Örnek: "E-ticaret hakkında merak edilenler"
+   Tipik uzunluk: 600-1200 kelime
+
+7. liste
+   Label: Liste
+   Ne zaman: "En iyi X", "X önerileri", sıralama/kürasyon içerikleri
+   Örnek: "2025'in en iyi 10 çalışma masası", "Küçük evler için 7 mobilya"
+   Tipik uzunluk: 800-1500 kelime
+
+8. hikaye
+   Label: Hikaye
+   Ne zaman: Marka hikayesi, kişisel deneyim, ilham verici anlatım
+   Örnek: "Evimi nasıl dönüştürdüm", "Müşterimizin dekorasyon yolculuğu"
+   Tipik uzunluk: 800-1500 kelime
+
+9. teknik-analiz
+   Label: Teknik Analiz
+   Ne zaman: Derinlemesine teknik içerik, veri odaklı, uzman kitle
+   Örnek: "MDF vs sunta: malzeme mukavemet karşılaştırması"
+   Tipik uzunluk: 1500-2500 kelime
+
+═══════════════════════════════════════
+FORMAT SEÇME KURALLARI
+═══════════════════════════════════════
+
+⚠️ ÖNEMLİ: Her konuya "rehber" (Kapsamlı Kılavuz) seçersen YANLIŞ
+yapmış olursun. Konunun doğasına bak. 9 farklı format var — hepsini
+kullan. "Rehber" SADECE gerçekten geniş, ansiklopedik konular içindir.
+
+Başlık Sinyalleri:
+  - "Nasıl" ile başlayan → genellikle problem-solution
+  - "En iyi", "X önerileri", "X tavsiyeleri" → genellikle liste
+  - "X vs Y", "hangisi" → genellikle karsilastirma
+  - "X nedir", "X rehberi" (geniş konu) → genellikle rehber
+  - "X nedir" (dar konu) → problem-solution veya sss
+  - "X kontrol listesi" → kontrol-listesi
+  - "X hakkında SSS", "sıkça sorulan" → sss
+  - Teknik terim yoğun, veri odaklı → teknik-analiz
+  - "Hikayemiz", "nasıl başladık", "yolculuk" → hikaye
+
+Pillar vs Standalone:
+  - content_type: "pillar" → genellikle rehber, ama HER pillar
+    rehber OLMAK ZORUNDA DEĞİL. Pillar başlığı karşılaştırma
+    sinyali taşıyorsa (X vs Y) → karsilastirma, liste sinyali
+    taşıyorsa (En iyi X) → liste formatı seçilebilir.
+  - Pillar içeriklerde structure_tip ZORUNLU (max 20 kelime).
+    Şu unsurları öner: içindekiler tablosu, minimum 5 alt başlık,
+    cluster yazılara link yapısı.
+  - Standalone → daha kısa ve odaklı formatlar.
+    structure_tip opsiyonel — sadece yapısal bir tavsiye varsa yaz,
+    yoksa boş string "" bırak.
+
+Dar vs Geniş Konu Tanımı:
+  - Dar konu: Tek ana soru, 1-2 alt soru ile cevaplanabilir.
+    Örn: "Ahşap masa nasıl temizlenir" → problem-solution
+  - Geniş konu: 5+ alt başlık gerektirir, birden fazla boyutu var.
+    Örn: "Ev dekorasyonu başlangıç rehberi" → rehber
+  - Geniş görünen ama aslında dar konulara DİKKAT:
+    "Small Space Furniture Solutions" → geniş gibi ama tek problem
+    (alan darlığı) var → problem-solution, rehber DEĞİL.
+
+Funnel Eğilimleri (kural değil, eğilim):
+  - TOFU → problem-solution, rehber, liste, sss, hikaye
+  - MOFU → karsilastirma, liste, kontrol-listesi, teknik-analiz
+  - BOFU → vaka-calismasi, karsilastirma, kontrol-listesi
+
+Intent Bazlı Eğilimler:
+  - informational → problem-solution, rehber, sss
+  - commercial → karsilastirma, liste, teknik-analiz
+  - transactional → kontrol-listesi, vaka-calismasi, karsilastirma
+  - navigational → sss veya problem-solution, uzunluk 600-900.
+    Navigational intent blog için nadirdir — kısa ve odaklı tut.
+
+Uzunluk Kararı:
+  - difficulty: Kolay → formatın alt sınırına yakın
+  - difficulty: Orta → formatın orta noktası
+  - difficulty: Zor → formatın üst sınırına yakın
+  - Dar konu → kısa. Geniş konu → uzun.
+  - recommendedLength her zaman integer olmalı.
+  - Intent-Uzunluk Dengesi (KRİTİK): Eğer search_intent
+    "transactional" veya "commercial" ise, kelime sayısını zorluk
+    seviyesine rağmen %10-20 daha kompakt tut. Ticari niyetli
+    okuyucu hızlı karar vermek ister — uzun içerik dönüşümü düşürür.
+    Örn: difficulty Zor + intent commercial → 2500 yerine 2000 civarı.
+
+═══════════════════════════════════════
+ÇIKTI FORMATI
+═══════════════════════════════════════
+Sadece JSON döndür, başka bir şey yazma:
+
 {
-  "recommendedFormat": "format-key",
-  "formatLabel": "Türkçe format adı",
+  "topic_title": "Orijinal konu başlığı — değiştirme",
+  "recommendedFormat": "problem-solution | rehber | vaka-calismasi | karsilastirma | kontrol-listesi | sss | liste | hikaye | teknik-analiz",
+  "formatLabel": "Türkçe format adı (Label alanından al)",
   "reasons": ["sebep 1", "sebep 2", "sebep 3"],
-  "recommendedLength": 1500,
-  "lengthReason": "neden bu uzunluk"
-}`;
+  "recommendedLength": 1200,
+  "lengthReason": "Neden bu uzunluk — max 1 cümle",
+  "structure_tip": "Yapısal tavsiye — max 1 cümle. Pillar içeriklerde zorunlu, standalone'da opsiyonel."
+}
+
+═══════════════════════════════════════
+JSON VERİ TİPLERİ
+═══════════════════════════════════════
+- Tüm string alanları her zaman string döndür, asla null yapma.
+- recommendedFormat SADECE şu 9 ASCII key'den biri olabilir:
+  problem-solution, rehber, vaka-calismasi, karsilastirma,
+  kontrol-listesi, sss, liste, hikaye, teknik-analiz
+  Türkçe karakter KULLANMA (karşılaştırma ❌ → karsilastirma ✅).
+- reasons dizisi: her zaman TAM 3 eleman, asla boş dizi olmasın.
+  Her reason şu 3 perspektiften birini kapsasın:
+  1. Başlık sinyali + format eşleşmesi
+  2. Funnel stage + search intent uyumu
+  3. Persona/tone + derinlik uyumu
+  Zayıf nedenler yazma ("uygun", "güzel", "TOFU" gibi tek kelime).
+  Her reason en az 1 cümle olmalı.
+- recommendedLength: integer (string değil). Asla null yapma.
+  Seçilen formatın tipik aralığında kalmalı. Intent compact kuralı
+  uygulanınca bile formatın alt sınırının altına düşmemeli.
+  Örn: problem-solution (800-1500) + compact → minimum 800.
+- structure_tip: pillar konularda dolu string, standalone'da boş string ""
+  olabilir. Asla null yapma. Max 20 kelime.
+
+Eksik Veri Kuralı:
+- TOPIC_JSON'da target_persona veya başka bir alan eksikse,
+  "veri mevcut değil" varsayımıyla karar ver. Eksik alanı UYDURMA,
+  mevcut alanlarla (title, funnel_stage, intent) karar ver.`;
 }
 
 // ── Blog Generation Prompt Builder ──
 
 const FORMAT_TEMPLATES: Record<BlogContentType, string> = {
-  "problem-solution": `ŞABLON: Adım Adım Rehber (Problem-Çözüm)
+  "problem-solution": `ŞABLON: Problem-Çözüm
 YAPI:
 1. Başlık (H1) — Net, problem çözen
 2. Giriş (2-3 cümle) — Acıyı tanımla + "ne kazanacaksın" söyle
@@ -213,7 +420,7 @@ YAPI:
 5. [DENEYİM] kutusu — En az 1 yerde
 6. Özet + CTA — 2-3 cümle + tek aksiyon`,
 
-  pillar: `ŞABLON: Kapsamlı Kılavuz (Pillar)
+  rehber: `ŞABLON: Kapsamlı Kılavuz (Rehber)
 YAPI:
 1. Başlık (H1) — Konuyu kapsayan, net
 2. Giriş — Konunun önemi + yazıda ne bulacaksın
@@ -226,7 +433,7 @@ YAPI:
 9. [DENEYİM] kutuları — En az 2 yerde
 10. Özet + CTA`,
 
-  "case-study": `ŞABLON: Başarı Hikayesi (Case Study)
+  "vaka-calismasi": `ŞABLON: Başarı Hikayesi (Vaka Çalışması)
 YAPI:
 1. Başlık (H1) — Sonuç odaklı
 2. Giriş — Kim, ne hedefledi
@@ -237,7 +444,7 @@ YAPI:
 7. [DENEYİM] kutuları — En az 2 yerde
 8. Çıkarılan Dersler + CTA`,
 
-  comparison: `ŞABLON: Karşılaştırma
+  karsilastirma: `ŞABLON: Karşılaştırma
 YAPI:
 1. Başlık (H1) — "X mi Y mi?" formatı
 2. Giriş — Neden bu karşılaştırma önemli
@@ -248,7 +455,7 @@ YAPI:
 7. [DENEYİM] kutusu — 1 yerde
 8. CTA`,
 
-  checklist: `ŞABLON: Kontrol Listesi (Checklist)
+  "kontrol-listesi": `ŞABLON: Kontrol Listesi
 YAPI:
 1. Başlık (H1) — "X Kontrol Listesi" formatı
 2. Giriş — Neden bu listeye ihtiyaç var
@@ -257,7 +464,7 @@ YAPI:
 5. [DENEYİM] kutusu — 1 yerde
 6. CTA`,
 
-  faq: `ŞABLON: Soru-Cevap (SSS)
+  sss: `ŞABLON: Soru-Cevap (SSS)
 YAPI:
 1. Başlık (H1) — "X Hakkında Sık Sorulan Sorular"
 2. Giriş — 2-3 cümle bağlam
@@ -265,6 +472,41 @@ YAPI:
 4. Her 3 soruda bir detaylı açıklama veya örnek
 5. [DENEYİM] kutusu — 1 yerde
 6. Özet + CTA`,
+
+  liste: `ŞABLON: Liste (Sıralama İçeriği)
+YAPI:
+1. Başlık (H1) — "En İyi X", "X Önerisi" formatı
+2. Giriş — Neden bu liste hazırlandı, seçim kriterleri
+3. 5-15 Madde — Her madde H2/H3 başlık + 2-4 cümle açıklama
+4. Her maddede artı/eksi veya kısa değerlendirme
+5. Her 3-4 maddede mini karşılaştırma ipucu
+6. [DENEYİM] kutusu — 1-2 yerde
+7. Sonuç — Genel değerlendirme + CTA`,
+
+  hikaye: `ŞABLON: Hikaye (Anlatım İçeriği)
+YAPI:
+1. Başlık (H1) — Merak uyandıran, sonuç ima eden
+2. Hook (ilk paragraf) — Okuru içine çeken sahne/durum
+3. Bağlam — Kim, ne, neden (arka plan)
+4. Dönüm Noktası — Değişimin başladığı an
+5. Süreç — Neler yaşandı, hangi adımlar atıldı
+6. Sonuç — Somut çıktı, rakam veya duygu
+7. Çıkarılan Dersler — Okur için uygulanabilir 2-3 öğreti
+8. [DENEYİM] kutuları — En az 2 yerde
+9. CTA — Okuru aksiyona yönlendir`,
+
+  "teknik-analiz": `ŞABLON: Teknik Analiz (Uzman İçerik)
+YAPI:
+1. Başlık (H1) — Teknik, net, anahtar kelime odaklı
+2. Yönetici Özeti — 3-4 cümle, ana bulgular (snippet hedefi)
+3. Giriş — Problem tanımı, analiz kapsamı
+4. Metodoloji — Hangi veri/araçlar kullanıldı (kısa)
+5. Bulgular — 3-6 bölüm, her biri veri + yorum
+6. Karşılaştırma Tablosu — HTML tablo ile veri sunumu
+7. Teknik Detaylar — Kod snippet, formül veya diyagram açıklaması
+8. Sonuç & Öneriler — Bulgulara dayalı aksiyon maddeleri
+9. [DENEYİM] kutuları — En az 1 yerde (gerçek test/uygulama deneyimi)
+10. Kaynaklar + CTA`,
 };
 
 export function buildBlogPrompt(req: BlogGenerateRequest): string {
@@ -280,7 +522,7 @@ SİTE BAĞLAMI
 - Marka: ${req.siteContext.brandName}
 - Site türü: ${req.siteContext.siteType}
 - Sektör: ${req.siteContext.industry || "genel"}
-- Dil: ${req.siteContext.primaryLanguage || "Türkçe"}
+- Yazım dili: ${req.language === "en" ? "İngilizce" : req.language === "tr" ? "Türkçe" : req.language || req.siteContext.primaryLanguage || "Türkçe"}${req.siteContext.targetAudience ? `\n- Hedef kitle: ${req.siteContext.targetAudience}` : ""}${req.siteContext.blogTone ? `\n- Blog tonu: ${req.siteContext.blogTone}` : ""}${req.siteContext.valueProposition ? `\n- Değer teklifi: ${req.siteContext.valueProposition}` : ""}${req.siteContext.recommendedCta ? `\n- Önerilen CTA: ${req.siteContext.recommendedCta}` : ""}
 
 ═══════════════════════════════════════
 GÖREV
@@ -360,7 +602,7 @@ ZORUNLU:
 - En az 1 yerde "eksik bilgi" itirafı ("Bu konuda herkesin farklı deneyimi var ama benim gördüğüm...")
 - Konuşma dili kullan — "yapmak lazım" > "yapılmalıdır"
 - İlk kişi tekil kullan ("Ben", "Bence")
-- Basit Türkçe, teknik terim varsa parantez içinde açıkla
+- ${req.language === "en" ? "Write in simple, conversational English. Explain technical terms in parentheses" : "Basit Türkçe, teknik terim varsa parantez içinde açıkla"}
 
 ═══════════════════════════════════════
 GÖRSEL PLACEHOLDER'LARI
@@ -428,6 +670,120 @@ const AI_CLICHE_PATTERNS = [
   /Merak etmeyin!/g,
 ];
 
+/**
+ * Gemini HTML yerine markdown/düz metin döndürürse HTML'e çevirir.
+ */
+export function ensureHtml(raw: string): string {
+  // Zaten HTML tag içeriyorsa dokunma
+  if (/<h[1-6][\s>]/i.test(raw) && /<\/p>/i.test(raw)) {
+    return raw;
+  }
+
+  let html = raw;
+
+  // Code block wrapper'ı temizle
+  html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "");
+
+  // Zaten HTML olabilir, tekrar kontrol
+  if (/<h[1-6][\s>]/i.test(html) && /<\/p>/i.test(html)) {
+    return html;
+  }
+
+  // Markdown → HTML dönüşümü
+  const lines = html.split("\n");
+  const result: string[] = [];
+  let inList: "ul" | "ol" | null = null;
+
+  function closeList() {
+    if (inList) {
+      result.push(inList === "ul" ? "</ul>" : "</ol>");
+      inList = null;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trimEnd();
+
+    // Boş satır
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+
+    // Headings: # → h1, ## → h2, ### → h3
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      closeList();
+      const level = headingMatch[1].length;
+      result.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    // Numbered heading: "1. Bold Title" at start (section headers)
+    const numberedHeading = line.match(/^(\d+)\.\s+\*\*(.+?)\*\*\s*$/);
+    if (numberedHeading) {
+      closeList();
+      result.push(`<h2>${numberedHeading[1]}. ${numberedHeading[2]}</h2>`);
+      continue;
+    }
+
+    // Unordered list: - item or * item
+    const ulMatch = line.match(/^[\-\*]\s+(.+)$/);
+    if (ulMatch) {
+      if (inList !== "ul") {
+        closeList();
+        result.push("<ul>");
+        inList = "ul";
+      }
+      result.push(`<li>${inlineFormat(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    // Ordered list: 1. item (not a heading)
+    const olMatch = line.match(/^(\d+)\.\s+(.+)$/);
+    if (olMatch && !line.match(/^(\d+)\.\s+\*\*.+\*\*\s*$/)) {
+      if (inList !== "ol") {
+        closeList();
+        result.push("<ol>");
+        inList = "ol";
+      }
+      result.push(`<li>${inlineFormat(olMatch[2])}</li>`);
+      continue;
+    }
+
+    // Blockquote: > text
+    const bqMatch = line.match(/^>\s*(.+)$/);
+    if (bqMatch) {
+      closeList();
+      result.push(`<blockquote><p>${inlineFormat(bqMatch[1])}</p></blockquote>`);
+      continue;
+    }
+
+    // HTML comment (IMAGE, TITLE, META, INTERNAL-LINK, AUTHOR) — olduğu gibi bırak
+    if (line.trim().startsWith("<!--")) {
+      closeList();
+      result.push(line);
+      continue;
+    }
+
+    // Normal paragraf
+    closeList();
+    result.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  closeList();
+  return result.join("\n");
+}
+
+/** Inline markdown: **bold**, *italic*, `code`, [link](url) */
+function inlineFormat(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>');
+}
+
 export function humanizeHtml(html: string): string {
   let result = html;
 
@@ -472,7 +828,7 @@ export function buildImagePrompt(
 ): string {
   const toneStyle = TONE_STYLES[tone] || TONE_STYLES["pratik"];
   const industryHint = industry ? ` ${industry} sektörü ile ilgili.` : "";
-  return `Blog görseli: ${description}. Stil: ${toneStyle}${industryHint} Profesyonel blog görseli, metin veya yazı içermez, temiz ve modern.`;
+  return `Blog görseli: ${description}. Stil: ${toneStyle}${industryHint} Profesyonel blog görseli. TEK bir görsel üret, kolaj/grid/bölünmüş/yan yana görsel yapma. Metin veya yazı içermez, temiz ve modern.`;
 }
 
 // ── Gemini API Helpers ──
@@ -503,34 +859,84 @@ export async function callGemini(
   return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
 }
 
-export async function callImagen(
+/**
+ * kie.ai Nano Banana Pro (Gemini 3 Pro Image) ile görsel üretir.
+ * Asenkron: task oluştur → poll → sonuç URL'i döndür.
+ */
+export async function callImageGen(
   prompt: string,
-  apiKey: string
+  kieApiKey: string
 ): Promise<string | null> {
   try {
-    const res = await fetch(`${IMAGEN_API_URL}?key=${apiKey}`, {
+    // 1. Task oluştur
+    const createRes = await fetch(KIE_CREATE_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${kieApiKey}`,
+      },
       body: JSON.stringify({
-        instances: [{ prompt }],
-        parameters: {
-          sampleCount: 1,
-          aspectRatio: "16:9",
-          personGeneration: "DONT_ALLOW",
+        model: "nano-banana-pro",
+        input: {
+          prompt,
+          aspect_ratio: "16:9",
+          resolution: "1K",
+          output_format: "jpg",
         },
       }),
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!res.ok) {
-      console.error("Imagen API error:", res.status, await res.text());
+    if (!createRes.ok) {
+      console.error("Kie.ai create error:", createRes.status, await createRes.text());
       return null;
     }
 
-    const data = await res.json();
-    return data?.predictions?.[0]?.bytesBase64Encoded || null;
+    const createData = await createRes.json();
+    console.log("Kie.ai create response:", JSON.stringify(createData));
+    const taskId = createData?.data?.taskId;
+    if (!taskId) {
+      console.error("Kie.ai: taskId alınamadı", createData);
+      return null;
+    }
+
+    // 2. Poll — max 90 saniye, 5 saniye aralıkla
+    const maxAttempts = 18;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+
+      const pollRes = await fetch(`${KIE_POLL_URL}?taskId=${taskId}`, {
+        headers: { Authorization: `Bearer ${kieApiKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!pollRes.ok) {
+        console.error("Kie.ai poll error:", pollRes.status);
+        continue;
+      }
+
+      const pollData = await pollRes.json();
+      const state = pollData?.data?.state;
+      console.log(`Kie.ai poll #${i + 1}: state=${state}`, pollData?.data?.failMsg || "");
+
+      if (state === "success") {
+        const resultJson = pollData.data.resultJson;
+        const parsed = typeof resultJson === "string" ? JSON.parse(resultJson) : resultJson;
+        const url = parsed?.resultUrls?.[0];
+        return url || null;
+      }
+
+      if (state === "fail") {
+        console.error("Kie.ai task failed:", pollData.data.failMsg);
+        return null;
+      }
+      // waiting, queuing, generating → devam et
+    }
+
+    console.error("Kie.ai: Timeout — task tamamlanmadı");
+    return null;
   } catch (err) {
-    console.error("Imagen error:", err);
+    console.error("Kie.ai error:", err);
     return null;
   }
 }

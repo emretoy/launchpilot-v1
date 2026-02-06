@@ -224,6 +224,23 @@ export interface PageAnalysis {
     detected: boolean;
     patterns: string[];
   };
+  ctaTexts: string[];
+  heroText: string | null;
+  businessSignals: {
+    numericClaims: string[];
+    hasVisiblePrice: boolean;
+    partnerPortal: {
+      exists: boolean;
+      url: string | null;
+      type: "subdomain" | "path" | null;
+    };
+    manufacturerSignals: boolean;
+    footerLocations: string[];
+    navigationItems: string[];
+    businessKeywords: string[];
+    multiCountryPresence: boolean;
+    aboutPageSummary: string | null;
+  };
 }
 
 // ── Online Presence ──
@@ -429,12 +446,86 @@ export interface DNAContentStructure {
   hasMobileApp: boolean;
   hasNewsletter: boolean;
   hasEcommerce: boolean;
+  hasPricingPage: boolean;
 }
 
 export interface DNAAISynthesis {
   summary: string | null;
   sophisticationScore: number | null; // 0-100
   growthStage: string | null;
+}
+
+// ── DNA v3 Business Analysis (AI çıktısı) ──
+export interface DNABusinessAnalysis {
+  business_identity: {
+    what_it_does: string;
+    core_problem_solved: string;
+    value_proposition: string;
+    operational_role: string; // Manufacturer | Distributor | Service-Provider | Retailer | SaaS | Content-Creator | Marketplace | Agency
+    primary_purpose: string; // Sales | Lead-Generation | Brand-Awareness | Support | Community
+    pricing_transparency: string; // Visible | Hidden-Quote-Based | Freemium | Not-Applicable
+  };
+  target_audience: {
+    primary_audience: string;
+    buyer_persona: string;
+    decision_maker_role: string;
+    awareness_level: string; // Unaware | Problem-Aware | Solution-Aware | Product-Aware | Most-Aware
+    funnel_focus: string; // TOFU | MOFU | BOFU | Full-Funnel
+    audience_type: string; // B2B | B2C | Both
+  };
+  revenue_model: {
+    how_money_is_made: string;
+    primary_conversion_action: string;
+    sales_cycle: string; // Instant | Short | Medium | Long-Complex
+    lead_capture_methods: string[];
+  };
+  trust_signals: {
+    company_maturity: string; // Startup | Growing | Established | Enterprise
+    social_proof_types: string[];
+    certifications_or_awards: string[];
+    trust_level_assessment: string;
+  };
+  content_status: {
+    has_active_blog: boolean;
+    last_post_date: string | null;
+    content_frequency: string; // None | Sporadic | Monthly | Weekly | Daily
+    content_quality: string; // None | Low | Medium | High | Professional
+    seo_awareness: string; // None | Basic | Intermediate | Advanced
+    observed_keyword_signals: string[];
+    estimated_content_gaps: string[];
+  };
+  cta_structure: {
+    primary_cta: string | null;
+    cta_consistency: string; // Consistent | Varies | Weak | Missing
+    recommended_blog_cta: string;
+  };
+  tone_and_voice: {
+    current_site_tone: string; // Corporate | Technical | Friendly | Sales-Driven | Educational | Mixed
+    language_complexity: string; // Simple | Moderate | Technical | Expert-Level
+    recommended_blog_tone: string;
+    tone_alignment_note: string;
+  };
+  digital_maturity: {
+    sophistication_score: number; // 0-100
+    score_reasoning: string;
+    site_type: string; // e-commerce | corporate | saas | blog | portfolio | hybrid
+    is_active_sales_tool: boolean;
+    has_real_ecommerce: boolean;
+  };
+  blog_strategy_verdict: {
+    should_blog: boolean;
+    why: string;
+    blog_role: string; // SEO-Traffic-Engine | Lead-Magnet | Authority-Builder | Customer-Education | Sales-Support | Not-Recommended
+    priority_topics: string[];
+    topics_to_avoid: string[];
+    recommended_content_types: string[];
+    posting_frequency_suggestion: string;
+  };
+  summary: string;
+  metrics: {
+    industry: string;
+    market_scope: string; // Local | National | Regional | Global
+  };
 }
 
 export interface WebsiteDNA {
@@ -448,6 +539,8 @@ export interface WebsiteDNA {
   legalTrust: DNALegalTrust;
   contentStructure: DNAContentStructure;
   aiSynthesis: DNAAISynthesis;
+  aiAnalysis?: DNABusinessAnalysis;
+  _prompts?: { gemini?: { template: string; context: string }; chatgpt?: { template: string; context: string } };
 }
 
 // ── SEO Authority Report ──
@@ -576,8 +669,20 @@ export interface BlogTopic {
   suggested_format: string | null;
   status: "suggested" | "planned" | "writing" | "published" | "rejected";
   planned_date: string | null;
+  source_evidence: { text: string; source: string; url?: string }[] | null;
+  country: string | null;
+  language: string | null;
   scan_id: string | null;
   created_at: string;
+  // v2.3 fields
+  content_type?: "pillar" | "standalone";
+  sub_topics?: string[];
+  is_niche_opportunity?: boolean;
+  funnel_stage?: "TOFU" | "MOFU" | "BOFU";
+  search_intent?: "informational" | "commercial" | "navigational" | "transactional";
+  target_persona?: string;
+  suggested_cta?: string;
+  best_publishing_quarter?: "Q1" | "Q2" | "Q3" | "Q4" | "Evergreen";
 }
 
 export interface BlogTopicScanRequest {
@@ -589,10 +694,31 @@ export interface BlogTopicScanRequest {
   brandName: string;
   dnaSummary: string | null;
   blogAuthorityScore: number | null;
+  // v3 aiAnalysis alanları (optional)
+  priorityTopics?: string[];
+  topicsToAvoid?: string[];
+  observedKeywords?: string[];
+  marketScope?: string; // Local | National | Regional | Global
+}
+
+export interface BlogTopicScanMetadata {
+  site: string;
+  content_language: string;
+  total_topics: number;
+  pillar_count: number;
+  standalone_count: number;
+  niche_opportunities: number;
+  funnel_distribution: {
+    tofu: number;
+    mofu: number;
+    bofu: number;
+  };
+  category_count: number;
 }
 
 export interface BlogTopicScanResult {
   topics: BlogTopic[];
+  metadata?: BlogTopicScanMetadata;
   sourceStats: {
     autocomplete: number;
     paa: number;
@@ -602,6 +728,7 @@ export interface BlogTopicScanResult {
     ai: number;
   };
   scanDuration: number;
+  _prompt?: string;
 }
 
 // ── Full Analysis Result (Part 1 — yeni her şey dahil) ──
