@@ -9,6 +9,7 @@ import type {
   DNSResult,
   SSLInfo,
   WebsiteDNA,
+  DNABusinessAnalysis,
   DNAIdentity,
   DNATargetMarket,
   DNAMaturity,
@@ -59,6 +60,16 @@ export async function analyzeWebsiteDNA(
   const legalTrust = detectLegalTrust(pageAnalysis, ssl, html);
   const contentStructure = detectContentStructure(crawl, html);
 
+  // Business signals override: fiyat yoksa + partner portal varsa → e-ticaret değil
+  if (!pageAnalysis.businessSignals.hasVisiblePrice && pageAnalysis.businessSignals.partnerPortal.exists) {
+    contentStructure.hasEcommerce = false;
+  }
+
+  // Business signals override: gerçekten farklı ülkelerdeyse → global
+  if (pageAnalysis.businessSignals.multiCountryPresence) {
+    targetMarket.marketScope = "global";
+  }
+
   // Build pre-validation DNA
   let dna: WebsiteDNA = {
     identity,
@@ -76,14 +87,87 @@ export async function analyzeWebsiteDNA(
   // Cross-validate before AI synthesis
   dna = validateDNA(dna, crawl, pageAnalysis, dns, domainInfo, html);
 
-  // AI synthesis + verification: Gemini + ChatGPT paralel
-  const [geminiResult, chatgptResult] = await Promise.all([
-    generateDNASynthesis(dna, crawl),
+  // v3: Gemini iş analizi + ChatGPT cross-validation paralel
+  const [businessResult, chatgptResult] = await Promise.all([
+    generateBusinessAnalysis(dna, crawl, pageAnalysis),
     chatgptVerifyDNA(dna, crawl),
   ]);
 
-  // Konsensüs oluştur ve DNA'yı güncelle
-  resolveAIConsensus(dna, geminiResult, chatgptResult);
+  if (businessResult) {
+    // Yeni aiAnalysis'i ata
+    dna.aiAnalysis = businessResult.analysis;
+
+    // Geriye uyumluluk: aiSynthesis'i aiAnalysis'ten türet
+    dna.aiSynthesis = {
+      summary: businessResult.analysis.summary || null,
+      sophisticationScore: businessResult.analysis.digital_maturity.sophistication_score,
+      growthStage: scoreToGrowthStage(businessResult.analysis.digital_maturity.sophistication_score),
+    };
+
+    // AI düzeltmelerini uygula
+    if (businessResult.analysis.metrics.industry) {
+      dna.identity.industry = businessResult.analysis.metrics.industry;
+    }
+
+    // Site type düzeltmesi (heuristic güveni düşükse)
+    if (dna.identity.siteTypeConfidence < 50 && businessResult.analysis.digital_maturity.site_type) {
+      const validTypes: DNASiteType[] = ["e-commerce", "blog", "corporate", "saas", "portfolio", "landing-page", "forum", "news", "directory", "education"];
+      if (validTypes.includes(businessResult.analysis.digital_maturity.site_type as DNASiteType)) {
+        dna.identity.siteType = businessResult.analysis.digital_maturity.site_type as DNASiteType;
+        dna.identity.signals.push(`AI v3 düzeltme: siteType → ${dna.identity.siteType}`);
+      }
+    }
+
+    // Audience düzeltmesi (v3 prompt "Both" döner, heuristic "both" bekler)
+    if (dna.targetMarket.audience === "unknown") {
+      const aiAudience = businessResult.analysis.target_audience.audience_type?.toLowerCase();
+      const validAudiences: DNATargetAudience[] = ["B2B", "B2C", "both"];
+      const mapped = aiAudience === "b2b" ? "B2B" : aiAudience === "b2c" ? "B2C" : aiAudience === "both" ? "both" : null;
+      if (mapped && validAudiences.includes(mapped)) {
+        dna.targetMarket.audience = mapped;
+      }
+    }
+
+    // ChatGPT cross-validation düzeltmelerini uygula
+    if (chatgptResult) {
+      // ChatGPT farklı siteType diyorsa ve Gemini v3 de aynı şeyi diyorsa → kesin uygula
+      if (chatgptResult.siteType && chatgptResult.siteType !== dna.identity.siteType) {
+        if (businessResult.analysis.digital_maturity.site_type === chatgptResult.siteType) {
+          dna.identity.siteType = chatgptResult.siteType;
+          dna.identity.siteTypeConfidence = Math.min(95, dna.identity.siteTypeConfidence + 20);
+          dna.identity.signals.push(`AI konsensüs (v3+ChatGPT): siteType → ${chatgptResult.siteType}`);
+        }
+      }
+      // hasEcommerce — ikisi de false diyorsa kesin false
+      if (chatgptResult.hasEcommerce === false && !businessResult.analysis.digital_maturity.has_real_ecommerce) {
+        dna.contentStructure.hasEcommerce = false;
+      }
+      // hasBlog — biri true diyorsa true
+      if (chatgptResult.hasBlog === true) {
+        dna.contentStructure.hasBlog = true;
+      }
+      // Industry fallback
+      if (!dna.identity.industry && chatgptResult.industry) {
+        dna.identity.industry = chatgptResult.industry;
+      }
+    }
+
+    // Prompt'ları sakla — Gemini v3 + ChatGPT cross-validation
+    dna._prompts = {
+      gemini: businessResult._prompt,
+      chatgpt: chatgptResult?._prompt || undefined,
+    };
+  } else {
+    // Fallback: eski Gemini sentezi + ChatGPT
+    console.warn("[DNA v3] generateBusinessAnalysis başarısız — fallback'e düşülüyor");
+    const geminiResult = await generateDNASynthesis(dna, crawl);
+    resolveAIConsensus(dna, geminiResult, chatgptResult);
+
+    dna._prompts = {
+      gemini: geminiResult._prompt || undefined,
+      chatgpt: chatgptResult?._prompt || undefined,
+    };
+  }
 
   return dna;
 }
@@ -238,12 +322,34 @@ function detectTargetMarket(
 
   let marketScope: DNAMarketScope = "unknown";
   const domain = getDomain(crawl.basicInfo.finalUrl);
+  // Ülke TLD tespiti: .co.uk, .com.tr, .com.au gibi compound + .de, .fr gibi tekli
+  const isCountryTLD = /\.(?:co\.uk|com\.tr|com\.au|com\.br|co\.jp|co\.kr|co\.za|co\.in|co\.nz|org\.uk|net\.au)$/i.test(domain)
+    || /\.(tr|de|fr|jp|cn|br|ru|kr|it|es|nl|pl|uk|au|in|za|se|no|dk|fi|at|ch|be|pt|gr|ie|cz|ro|hu|bg|hr|rs|mx|ar|co|cl|sg|my|th|id|vn|ph|eg|ma|il|qa|kw|bh|om|sa|ae|uz|nz)$/i.test(domain);
+
   if (hreflangs.length > 1) {
     marketScope = "global";
-  } else if (/\.(tr|de|fr|jp|cn|br|ru|kr|it|es|nl|pl)$/i.test(domain)) {
-    marketScope = "local";
+  } else if (isCountryTLD) {
+    marketScope = "national";
   } else if (domain.endsWith(".com") && hreflangs.length <= 1) {
     marketScope = "national";
+  }
+
+  // "Free [country] delivery/shipping" veya "ücretsiz [ülke] kargo/teslimat" → national
+  const bodyText = html; // html zaten lowercase
+  const nationalDeliveryRegex = /(?:free|ücretsiz|kostenlos|gratuit)\s+(?:uk|us|usa|turkey|türkiye|deutschland|france|india|australia)\s+(?:delivery|shipping|kargo|teslimat|versand|livraison)/i;
+  if (marketScope === "unknown" && nationalDeliveryRegex.test(bodyText)) {
+    marketScope = "national";
+  }
+  // Daha genel: "free delivery across/throughout [country]" veya "[ülke] genelinde ücretsiz kargo"
+  const nationalDeliveryRegex2 = /(?:across|throughout|nationwide|ülke genelinde|tüm türkiye|tüm ingiltere|all over the uk|uk-wide|türkiye geneli)/i;
+  if (marketScope === "unknown" && nationalDeliveryRegex2.test(bodyText)) {
+    marketScope = "national";
+  }
+
+  // Business signals override: multi-country veya "X countries" iddiası → global
+  const countryClaimRegex = /\d+\+?\s*(?:countries|ülke|country)/i;
+  if (countryClaimRegex.test(bodyText)) {
+    marketScope = "global";
   }
 
   // Languages
@@ -583,7 +689,9 @@ function detectContentStructure(crawl: CrawlResult, html: string): DNAContentStr
   const hasPricePattern = /\$\d|€\d|₺\d|\d+\s*(TL|USD|EUR|GBP)|price|fiyat/i.test(html);
   const hasEcommerce = isEcomPlatform || (hasCartPattern && hasPricePattern);
 
-  return { hasBlog, hasAuth, hasSearch, hasMobileApp, hasNewsletter, hasEcommerce };
+  const hasPricingPage = /\/(pricing|fiyat|fiyatlandirma|plans|paketler)(\/|$|\?|#)/i.test(allLinks);
+
+  return { hasBlog, hasAuth, hasSearch, hasMobileApp, hasNewsletter, hasEcommerce, hasPricingPage };
 }
 
 // ============================================================
@@ -600,6 +708,7 @@ interface AIVerification {
   correctedScale: DNASiteScale | null;
   correctedHasEcommerce: boolean | null;
   correctedHasBlog: boolean | null;
+  _prompt?: { template: string; context: string };
 }
 
 async function generateDNASynthesis(dna: WebsiteDNA, crawl: CrawlResult): Promise<AIVerification> {
@@ -607,7 +716,7 @@ async function generateDNASynthesis(dna: WebsiteDNA, crawl: CrawlResult): Promis
     synthesis: { summary: null, sophisticationScore: null, growthStage: null },
     industry: null, correctedSiteType: null, correctedAudience: null, correctedRevenue: null,
     correctedMarketScope: null, correctedMaturity: null, correctedScale: null,
-    correctedHasEcommerce: null, correctedHasBlog: null,
+    correctedHasEcommerce: null, correctedHasBlog: null, _prompt: { template: "", context: "" },
   };
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return fallback;
@@ -630,6 +739,35 @@ Hukuki: gizlilik=${dna.legalTrust.hasPrivacyPolicy}, şartlar=${dna.legalTrust.h
 Tespit sinyalleri: ${dna.identity.signals.join(", ")}
 `;
 
+  const promptTemplate = `Sen bir web sitesi DNA doğrulama uzmanısın. Otomatik tarayıcı aşağıdaki tespitleri yaptı. Senin görevin:
+1. Bu tespitleri doğrula veya düzelt
+2. Türkçe bir özet yaz
+3. Eksik bilgileri tamamla
+
+[SİTE VERİSİ BURAYA EKLENİR]
+
+JSON döndür:
+{
+  "summary": "Türkçe 8-12 cümle...",
+  "sophisticationScore": "0-100",
+  "growthStage": "Yeni Doğmuş|Bebek|Çocuk|Genç|Yetişkin|Usta",
+  "industry": "Sektör (Türkçe, kısa)",
+  "correctedSiteType": "Yanlışsa doğrusu, doğruysa null",
+  "correctedAudience": "Yanlışsa doğrusu, doğruysa null",
+  "correctedRevenue": "Yanlışsa doğrusu, doğruysa null",
+  "correctedMarketScope": "Yanlışsa doğrusu, doğruysa null",
+  "correctedMaturity": "Yanlışsa doğrusu, doğruysa null",
+  "correctedScale": "Yanlışsa doğrusu, doğruysa null",
+  "correctedHasEcommerce": "Boolean, doğruysa null",
+  "correctedHasBlog": "Boolean, doğruysa null"
+}
+
+Kurallar:
+- Sadece JSON döndür, başka bir şey yazma
+- Türkçe yaz (summary ve industry için)
+- Site title, description ve sinyallerden çıkarım yap
+- Eğer tespit doğruysa corrected alanlarına null yaz`;
+
   const prompt = `Sen bir web sitesi DNA doğrulama uzmanısın. Otomatik tarayıcı aşağıdaki tespitleri yaptı. Senin görevin:
 1. Bu tespitleri doğrula veya düzelt
 2. Türkçe bir özet yaz
@@ -639,7 +777,7 @@ ${dnaContext}
 
 JSON döndür:
 {
-  "summary": "Türkçe 3-5 cümle. Sitenin ne olduğunu, kime hitap ettiğini, dijital varlık durumunu açıkla.",
+  "summary": "Türkçe 8-12 cümle. Sitenin ne sitesi olduğunu, hangi sektörde faaliyet gösterdiğini, kime hitap ettiğini (hedef kitle profili), nasıl bir iş modeli izlediğini, dijital olgunluğunu, içerik stratejisini ve genel dijital varlık durumunu detaylıca açıkla. Teknik olmayan bir dille, sanki bu siteyi birine tanıtıyormuş gibi yaz. Bu açıklama aynı zamanda blog stratejisi için bağlam olarak kullanılacak.",
   "sophisticationScore": 0-100 (teknik gelişmişlik + içerik + pazarlama + hukuki uyum),
   "growthStage": "Yeni Doğmuş|Bebek|Çocuk|Genç|Yetişkin|Usta",
   "industry": "Sektör (Türkçe, kısa. Örn: Mobilya / Üretim, SaaS / Proje Yönetimi, Sağlık / Klinik)",
@@ -669,7 +807,7 @@ Kurallar:
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: 2000,
+          maxOutputTokens: 3000,
           responseMimeType: "application/json",
         },
       }),
@@ -716,15 +854,17 @@ Kurallar:
       correctedScale: parsed.correctedScale && validScale.includes(parsed.correctedScale) ? parsed.correctedScale : null,
       correctedHasEcommerce: typeof parsed.correctedHasEcommerce === "boolean" ? parsed.correctedHasEcommerce : null,
       correctedHasBlog: typeof parsed.correctedHasBlog === "boolean" ? parsed.correctedHasBlog : null,
+      _prompt: { template: promptTemplate, context: dnaContext.trim() },
     };
   } catch (err) {
     console.error("[DNA] AI synthesis error:", err);
+    fallback._prompt = { template: promptTemplate, context: dnaContext.trim() };
     return fallback;
   }
 }
 
 // ============================================================
-// 11. CHATGPT VERIFICATION — İkinci AI doğrulama
+// 11. CHATGPT VERIFICATION — Cross-validation (v3'te paralel çalışır)
 // ============================================================
 interface ChatGPTVerification {
   siteType: DNASiteType | null;
@@ -736,6 +876,7 @@ interface ChatGPTVerification {
   scale: DNASiteScale | null;
   hasEcommerce: boolean | null;
   hasBlog: boolean | null;
+  _prompt?: { template: string; context: string };
 }
 
 async function chatgptVerifyDNA(dna: WebsiteDNA, crawl: CrawlResult): Promise<ChatGPTVerification | null> {
@@ -756,6 +897,30 @@ Contact: ${dna.contact.methods.join(", ") || "Yok"}
 Social: ${dna.contact.socialPlatforms.join(", ") || "Yok"}
 Hukuki: gizlilik=${dna.legalTrust.hasPrivacyPolicy}, kvkk=${dna.legalTrust.hasKVKK}, cookie=${dna.legalTrust.hasCookieConsent}
 Signals: ${dna.identity.signals.join(", ")}`;
+
+  const chatgptTemplate = `Bir web sitesinin otomatik tarama verileri aşağıda. Bu siteyi BAĞIMSIZ olarak analiz et ve TÜM alanları sınıflandır.
+
+[SİTE VERİSİ BURAYA EKLENİR]
+
+Sadece JSON döndür:
+{
+  "siteType": "e-commerce|blog|corporate|saas|...",
+  "audience": "B2B|B2C|both",
+  "revenue": "e-commerce|advertising|saas|...",
+  "industry": "Sektör (Türkçe, kısa)",
+  "marketScope": "local|national|global",
+  "maturity": "newborn|young|growing|mature|veteran",
+  "scale": "single-page|small|medium|large|enterprise",
+  "hasEcommerce": true/false,
+  "hasBlog": true/false
+}
+
+Kurallar:
+- Sadece JSON döndür
+- Ürün tanıtımı yapan ama sepet/ödeme olmayan siteler corporate'tir
+- hasEcommerce: SADECE gerçek alışveriş (sepet+ödeme) varsa true
+- Bayilik/partner portalı = B2B + lead-generation
+- .com.tr gibi ülke TLD'si + tek dil = local veya national`;
 
   const prompt = `Bir web sitesinin otomatik tarama verileri aşağıda. Bu siteyi BAĞIMSIZ olarak analiz et ve TÜM alanları sınıflandır.
 
@@ -833,6 +998,7 @@ Kurallar:
       scale: validScale.includes(parsed.scale) ? parsed.scale : null,
       hasEcommerce: typeof parsed.hasEcommerce === "boolean" ? parsed.hasEcommerce : null,
       hasBlog: typeof parsed.hasBlog === "boolean" ? parsed.hasBlog : null,
+      _prompt: { template: chatgptTemplate, context: context.trim() },
     };
   } catch (err) {
     console.error("[DNA] ChatGPT verification error:", err);
@@ -841,7 +1007,7 @@ Kurallar:
 }
 
 // ============================================================
-// 12. AI CONSENSUS — İki AI'ın konsensüsü
+// 12. AI CONSENSUS — İki AI'ın konsensüsü (v3 fallback'te kullanılır)
 // ============================================================
 function resolveAIConsensus(
   dna: WebsiteDNA,
@@ -1126,4 +1292,421 @@ function validateTechStackConsistency(dna: WebsiteDNA, dns: DNSResult, html: str
       dna.techStack.hosting = null;
     }
   }
+}
+
+// ============================================================
+// 13. BUILD CRAWL DATA JSON — Heuristic DNA + CrawlResult → JSON
+// ============================================================
+function buildCrawlDataJSON(
+  dna: WebsiteDNA,
+  crawl: CrawlResult,
+  pageAnalysis: PageAnalysis
+): string {
+  const data = {
+    url: crawl.basicInfo.finalUrl,
+    title: crawl.basicInfo.title || null,
+    meta_description: crawl.basicInfo.metaDescription || null,
+    h1_tags: crawl.headings.h1.map(h => h.text),
+    page_titles: crawl.links.internal.map(l => l.text).filter(Boolean).slice(0, 30),
+    internal_links_count: crawl.links.totalInternal,
+    has_blog: dna.contentStructure.hasBlog,
+    blog_post_count: null,
+    last_blog_date: null,
+    has_ecommerce: dna.contentStructure.hasEcommerce,
+    has_pricing_page: dna.contentStructure.hasPricingPage,
+    has_contact_form: pageAnalysis.cta.hasContactForm,
+    tech_stack: [
+      dna.techStack.platform,
+      dna.techStack.jsFramework,
+      dna.techStack.hosting,
+    ].filter(Boolean),
+    legal_pages: {
+      privacy_policy: dna.legalTrust.hasPrivacyPolicy,
+      terms: dna.legalTrust.hasTerms,
+      kvkk: dna.legalTrust.hasKVKK,
+      cookie_consent: dna.legalTrust.hasCookieConsent,
+    },
+    social_links: pageAnalysis.socialLinks.map(s => `${s.platform}: ${s.url}`),
+    contact_info: {
+      methods: dna.contact.methods,
+      has_physical_address: dna.contact.hasPhysicalAddress,
+    },
+    visible_cta_texts: pageAnalysis.ctaTexts.slice(0, 15),
+    homepage_hero_text: pageAnalysis.heroText || null,
+    about_page_summary: pageAnalysis.businessSignals.aboutPageSummary || null,
+    business_signals: {
+      numeric_claims: pageAnalysis.businessSignals.numericClaims,
+      has_visible_price: pageAnalysis.businessSignals.hasVisiblePrice,
+      partner_portal: pageAnalysis.businessSignals.partnerPortal,
+      manufacturer_signals: pageAnalysis.businessSignals.manufacturerSignals,
+      footer_locations: pageAnalysis.businessSignals.footerLocations,
+      navigation_items: pageAnalysis.businessSignals.navigationItems,
+      business_keywords: pageAnalysis.businessSignals.businessKeywords,
+      multi_country_presence: pageAnalysis.businessSignals.multiCountryPresence,
+    },
+    schema_types: crawl.technical.schemaTypes,
+    language: crawl.basicInfo.language,
+    domain_tld: getDomain(crawl.basicInfo.finalUrl).split(".").pop() || null,
+  };
+
+  return JSON.stringify(data, null, 2);
+}
+
+// ============================================================
+// 14. GENERATE BUSINESS ANALYSIS — v3 Prompt + Gemini
+// ============================================================
+interface BusinessAnalysisResult {
+  analysis: DNABusinessAnalysis;
+  _prompt: { template: string; context: string };
+}
+
+async function generateBusinessAnalysis(
+  dna: WebsiteDNA,
+  crawl: CrawlResult,
+  pageAnalysis: PageAnalysis
+): Promise<BusinessAnalysisResult | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  const crawlDataJSON = buildCrawlDataJSON(dna, crawl, pageAnalysis);
+
+  const promptTemplate = `Sen kıdemli bir Dijital İş Analisti, İçerik Stratejisti ve Blog Danışmanısın.
+
+Sana verilen bir web sitesini yalnızca tasarım veya teknik yapı üzerinden değil; iş modelinin
+mantığı, para kazanma mekanizması, stratejik konumlanması ve içerik potansiyeli üzerinden
+analiz edeceksin.
+
+═══════════════════════════════════════
+SİTE VERİLERİ (Otomatik Tarama)
+═══════════════════════════════════════
+Aşağıdaki veriler otomatik crawl ile elde edilmiştir.
+Bu verileri DOĞRU KABUL ET, tekrar tahmin etme.
+Senin görevin bu verilerin ÜSTÜNE iş analizi katmanını eklemek.
+
+Tech stack, legal sayfalar, iletişim bilgileri ve sosyal medya
+linkleri gibi veriler zaten taranmıştır — bunları tekrar üretme.
+
+{{CRAWL_DATA}}
+
+═══════════════════════════════════════
+AMAÇ
+═══════════════════════════════════════
+Bu sitenin gerçek DNA'sını çözmek. Yani:
+• Şirket gerçekte ne iş yapıyor?
+• Web sitesi bu iş modeline hizmet ediyor mu, yoksa sadece vitrin mi?
+• Blog / içerik üretimi bu yapıda satış motoru mu, lead makinesi mi, yoksa marka süsü mü?
+• Bu site için blog yazacak biri HANGİ konularda, HANGİ tonda, KİME hitaben yazmalı?
+
+═══════════════════════════════════════
+ANALİZ KATMANLARI
+═══════════════════════════════════════
+
+1. MİSYON & PROBLEM ANALİZİ
+   • Site gerçekten bir problemi mi çözüyor, yoksa "biz buradayız" mı diyor?
+   • Kullanıcı siteye girdiğinde neden kalmalı?
+   • Hangi acı noktayı (pain point) adresliyor?
+   • Çözüm vaadi net mi, belirsiz mi?
+
+2. GELİR MODELİ ÇÖZÜMLEMESİ
+   • Para doğrudan mı kazanılıyor (ürün/hizmet satışı)?
+   • Lead toplayıp satış ekibine mi aktarılıyor?
+   • Distribütörlük, bayilik veya teklif talebi mi ana hedef?
+   • Trafik → içerik → dolaylı gelir (reklam, otorite) modeli var mı?
+   • Sitede fiyat bilgisi var mı? Yoksa "teklif alın" mı diyor? Bu ne anlama geliyor?
+
+3. GÜVEN & OTORİTE SİNYALLERİ
+   • "Fabrika / üretici / köklü firma" hissi mi veriyor?
+   • Yoksa "startup / girişim / ölçeklenme arayan yapı" mı?
+   • Referanslar, sertifikalar, teknik dil, görsel yapı ve söylem bunu nasıl destekliyor?
+   • Sosyal kanıt var mı? (Müşteri yorumları, vaka çalışmaları, logolar, medya görünürlüğü)
+
+4. HEDEF KİTLE DERİNLİĞİ (Blog için kritik)
+   • Birincil hedef kitle kim? (Sektör, pozisyon, karar verici profili)
+   • Alıcı farkındalık seviyesi ne?
+     - Problemi bilmiyor (Unaware)
+     - Problemi biliyor ama çözümü bilmiyor (Problem-Aware)
+     - Çözümleri araştırıyor (Solution-Aware)
+     - Bu firmayı değerlendiriyor (Product-Aware)
+   • Müşteri yolculuğunun hangi aşamasına hitap ediyor site? (TOFU / MOFU / BOFU)
+   • Sitenin dili teknik mi, sade mi, kurumsal mı, samimi mi?
+
+5. İÇERİK & SEO DURUMU
+   • Mevcut blog var mı? Aktif mi? Son yazı ne zaman yayınlanmış?
+   • İçerik bilinçli bir stratejiyle mi üretilmiş, yoksa rastgele mi?
+   • Sayfa başlıkları ve meta açıklamaları SEO odaklı mı?
+   • H1, title ve meta description'lardan gözlemlenen anahtar kelime sinyalleri neler?
+   • Sektör bilgine dayanarak olası içerik boşlukları neler?
+
+6. CTA & DÖNÜŞÜM YAPISI
+   • Sitede ana CTA (Call-to-Action) ne? (Teklif al, ara, sepete ekle, demo iste, form doldur)
+   • CTA tutarlı mı yoksa sayfalara göre değişiyor mu?
+   • Blog yazılarının sonunda hangi CTA mantıklı olur?
+
+7. TON & SES ANALİZİ (Blog için kritik)
+   • Sitenin mevcut iletişim tonu ne?
+     - Kurumsal / Resmi
+     - Teknik / Mühendislik dili
+     - Samimi / Sohbet tarzı
+     - Satışçı / İkna odaklı
+     - Eğitici / Bilgilendirici
+   • Blog bu tonla uyumlu mu olmalı, yoksa farklılaşmalı mı?
+
+8. DİJİTAL OLGUNLUK
+   • Site aktif bir satış aracı mı, yoksa dijital kartvizit mi?
+   • İçerik stratejisi bilinçli mi yoksa rastgele mi?
+   • Blog yazılabilir mi, yazılmalı mı, yoksa zaman kaybı mı?
+   • Eğer blog yazılacaksa, sitenin mevcut yapısı bunu destekliyor mu?
+
+═══════════════════════════════════════
+İŞ MODELİ SİNYAL OKUMA KURALLARI (KRİTİK)
+═══════════════════════════════════════
+business_signals verisini MUTLAKA oku ve şu kurallara göre değerlendir:
+
+• manufacturer_signals: true ise → operational_role: "Manufacturer" olma ihtimali çok yüksek
+• partner_portal.exists: true ise → audience_type: "B2B" sinyali, lead-gen modeli
+• has_visible_price: false VE ürün/kategori sayfaları varsa → bu e-ticaret DEĞİL, KATALOG/TANITIM sitesi
+• multi_country_presence: true ise → market_scope: KESİNLİKLE "Global" yap, "National" YAZMA
+• numeric_claims'de "X countries/ülke" geçiyorsa → market_scope: KESİNLİKLE "Global"
+• footer_locations'da 2+ farklı ülke varsa → market_scope: KESİNLİKLE "Global"
+• domain_tld ülkeye özel ise (.co.uk, .de, .fr, .com.tr vb.) → market_scope: "National" (o ülke pazarı)
+• Sitede "free UK delivery", "ücretsiz Türkiye kargo" gibi ülkeye özel teslimat ifadesi varsa → "National"
+• numeric_claims'de "factory/fabrika" geçiyorsa → kesinlikle üretici
+• navigation_items'da "partner/dealer/bayi/login" varsa → B2B portal sinyali
+• cta_texts'de "buy/satın al/sepete ekle" YOKSA VE "reach us/get connected/teklif al" VARSA → lead-gen, e-ticaret değil
+• footer_locations 2+ ülke gösteriyorsa → global operasyon
+• about_page_summary varsa → şirketin gerçek hikayesini buradan oku, homepage'den değil
+
+ÖNEMLİ: Ürün görselleri ve kategori sayfaları olması e-ticaret ANLAMINA GELMEZ.
+Fiyat + sepet + ödeme yoksa bu bir KATALOG/TANITIM sitesidir.
+
+═══════════════════════════════════════
+KURALLAR
+═══════════════════════════════════════
+• Doğrulayamadığın veya crawl verisinden çıkaramadığın alanlara null yaz, UYDURMA.
+• Tahmine dayanan alanlarda değerin başına "estimated:" öneki ekle.
+  Örnek: "estimated: Ayda 2-3 yazı"
+• Crawl verisinde zaten bulunan bilgileri (tech stack, legal, contact, social) tekrar üretme.
+  Senin işin İŞ ANALİZİ ve BLOG STRATEJİSİ katmanını eklemek.
+• identified_keyword_clusters yerine observed_keyword_signals kullan.
+  Bunlar H1/title/meta'dan gözlemlenen sinyallerdir, GSC/Semrush verisi DEĞİLDİR.
+• content_gaps alanı sektör bilgine dayanan TAHMİNDİR, bunu açıkça belirt.
+• Tüm açıklama alanlarını TÜRKÇE yaz.
+
+═══════════════════════════════════════
+ÇIKTI FORMATI
+═══════════════════════════════════════
+
+⚠️ SADECE JSON DÖNDÜR – açıklama, yorum, ekstra metin yazma.
+
+{
+  "business_identity": {
+    "what_it_does": "",
+    "core_problem_solved": "",
+    "value_proposition": "",
+    "operational_role": "Manufacturer | Distributor | Service-Provider | Retailer | SaaS | Content-Creator | Marketplace | Agency",
+    "primary_purpose": "Sales | Lead-Generation | Brand-Awareness | Support | Community",
+    "pricing_transparency": "Visible | Hidden-Quote-Based | Freemium | Not-Applicable"
+  },
+
+  "target_audience": {
+    "primary_audience": "",
+    "buyer_persona": "",
+    "decision_maker_role": "",
+    "awareness_level": "Unaware | Problem-Aware | Solution-Aware | Product-Aware | Most-Aware",
+    "funnel_focus": "TOFU | MOFU | BOFU | Full-Funnel",
+    "audience_type": "B2B | B2C | Both"
+  },
+
+  "revenue_model": {
+    "how_money_is_made": "",
+    "primary_conversion_action": "",
+    "sales_cycle": "Instant | Short | Medium | Long-Complex",
+    "lead_capture_methods": []
+  },
+
+  "trust_signals": {
+    "company_maturity": "Startup | Growing | Established | Enterprise",
+    "social_proof_types": [],
+    "certifications_or_awards": [],
+    "trust_level_assessment": ""
+  },
+
+  "content_status": {
+    "has_active_blog": false,
+    "last_post_date": null,
+    "content_frequency": "None | Sporadic | Monthly | Weekly | Daily",
+    "content_quality": "None | Low | Medium | High | Professional",
+    "seo_awareness": "None | Basic | Intermediate | Advanced",
+    "observed_keyword_signals": [],
+    "estimated_content_gaps": []
+  },
+
+  "cta_structure": {
+    "primary_cta": "",
+    "cta_consistency": "Consistent | Varies | Weak | Missing",
+    "recommended_blog_cta": ""
+  },
+
+  "tone_and_voice": {
+    "current_site_tone": "Corporate | Technical | Friendly | Sales-Driven | Educational | Mixed",
+    "language_complexity": "Simple | Moderate | Technical | Expert-Level",
+    "recommended_blog_tone": "",
+    "tone_alignment_note": ""
+  },
+
+  "digital_maturity": {
+    "sophistication_score": 0,
+    "score_reasoning": "",
+    "site_type": "e-commerce | corporate | saas | blog | portfolio | hybrid",
+    "is_active_sales_tool": false,
+    "has_real_ecommerce": false
+  },
+
+  "blog_strategy_verdict": {
+    "should_blog": true,
+    "why": "",
+    "blog_role": "SEO-Traffic-Engine | Lead-Magnet | Authority-Builder | Customer-Education | Sales-Support | Not-Recommended",
+    "priority_topics": [],
+    "topics_to_avoid": [],
+    "recommended_content_types": [],
+    "posting_frequency_suggestion": ""
+  },
+
+  "summary": "",
+
+  "metrics": {
+    "industry": "",
+    "market_scope": "Local | National | Regional | Global"
+  }
+}`;
+
+  const prompt = promptTemplate.replace("{{CRAWL_DATA}}", crawlDataJSON);
+
+  try {
+    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 8000,
+          responseMimeType: "application/json",
+        },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[DNA v3] Gemini API error:", res.status, errText);
+      return null;
+    }
+
+    const data = await res.json();
+    let jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!jsonStr) return null;
+
+    // Clean markdown fences if present
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+
+    const parsed = JSON.parse(jsonStr.trim());
+
+    // Validation + defaults
+    const analysis: DNABusinessAnalysis = {
+      business_identity: {
+        what_it_does: parsed.business_identity?.what_it_does || "Bilinmiyor",
+        core_problem_solved: parsed.business_identity?.core_problem_solved || "Bilinmiyor",
+        value_proposition: parsed.business_identity?.value_proposition || "Bilinmiyor",
+        operational_role: parsed.business_identity?.operational_role || "Service-Provider",
+        primary_purpose: parsed.business_identity?.primary_purpose || "Brand-Awareness",
+        pricing_transparency: parsed.business_identity?.pricing_transparency || "Not-Applicable",
+      },
+      target_audience: {
+        primary_audience: parsed.target_audience?.primary_audience || "Bilinmiyor",
+        buyer_persona: parsed.target_audience?.buyer_persona || "Bilinmiyor",
+        decision_maker_role: parsed.target_audience?.decision_maker_role || "Bilinmiyor",
+        awareness_level: parsed.target_audience?.awareness_level || "Problem-Aware",
+        funnel_focus: parsed.target_audience?.funnel_focus || "Full-Funnel",
+        audience_type: parsed.target_audience?.audience_type || "B2C",
+      },
+      revenue_model: {
+        how_money_is_made: parsed.revenue_model?.how_money_is_made || "Bilinmiyor",
+        primary_conversion_action: parsed.revenue_model?.primary_conversion_action || "Bilinmiyor",
+        sales_cycle: parsed.revenue_model?.sales_cycle || "Medium",
+        lead_capture_methods: Array.isArray(parsed.revenue_model?.lead_capture_methods) ? parsed.revenue_model.lead_capture_methods : [],
+      },
+      trust_signals: {
+        company_maturity: parsed.trust_signals?.company_maturity || "Growing",
+        social_proof_types: Array.isArray(parsed.trust_signals?.social_proof_types) ? parsed.trust_signals.social_proof_types : [],
+        certifications_or_awards: Array.isArray(parsed.trust_signals?.certifications_or_awards) ? parsed.trust_signals.certifications_or_awards : [],
+        trust_level_assessment: parsed.trust_signals?.trust_level_assessment || "",
+      },
+      content_status: {
+        has_active_blog: typeof parsed.content_status?.has_active_blog === "boolean" ? parsed.content_status.has_active_blog : false,
+        last_post_date: parsed.content_status?.last_post_date || null,
+        content_frequency: parsed.content_status?.content_frequency || "None",
+        content_quality: parsed.content_status?.content_quality || "None",
+        seo_awareness: parsed.content_status?.seo_awareness || "None",
+        observed_keyword_signals: Array.isArray(parsed.content_status?.observed_keyword_signals) ? parsed.content_status.observed_keyword_signals : [],
+        estimated_content_gaps: Array.isArray(parsed.content_status?.estimated_content_gaps) ? parsed.content_status.estimated_content_gaps : [],
+      },
+      cta_structure: {
+        primary_cta: parsed.cta_structure?.primary_cta || null,
+        cta_consistency: parsed.cta_structure?.cta_consistency || "Missing",
+        recommended_blog_cta: parsed.cta_structure?.recommended_blog_cta || "",
+      },
+      tone_and_voice: {
+        current_site_tone: parsed.tone_and_voice?.current_site_tone || "Mixed",
+        language_complexity: parsed.tone_and_voice?.language_complexity || "Moderate",
+        recommended_blog_tone: parsed.tone_and_voice?.recommended_blog_tone || "Bilinmiyor",
+        tone_alignment_note: parsed.tone_and_voice?.tone_alignment_note || "",
+      },
+      digital_maturity: {
+        sophistication_score: parsed.digital_maturity?.sophistication_score != null
+          ? Math.min(100, Math.max(0, parsed.digital_maturity.sophistication_score))
+          : 50,
+        score_reasoning: parsed.digital_maturity?.score_reasoning || "",
+        site_type: parsed.digital_maturity?.site_type || "corporate",
+        is_active_sales_tool: typeof parsed.digital_maturity?.is_active_sales_tool === "boolean" ? parsed.digital_maturity.is_active_sales_tool : false,
+        has_real_ecommerce: typeof parsed.digital_maturity?.has_real_ecommerce === "boolean" ? parsed.digital_maturity.has_real_ecommerce : false,
+      },
+      blog_strategy_verdict: {
+        should_blog: typeof parsed.blog_strategy_verdict?.should_blog === "boolean" ? parsed.blog_strategy_verdict.should_blog : true,
+        why: parsed.blog_strategy_verdict?.why || "",
+        blog_role: parsed.blog_strategy_verdict?.blog_role || "Authority-Builder",
+        priority_topics: Array.isArray(parsed.blog_strategy_verdict?.priority_topics) ? parsed.blog_strategy_verdict.priority_topics : [],
+        topics_to_avoid: Array.isArray(parsed.blog_strategy_verdict?.topics_to_avoid) ? parsed.blog_strategy_verdict.topics_to_avoid : [],
+        recommended_content_types: Array.isArray(parsed.blog_strategy_verdict?.recommended_content_types) ? parsed.blog_strategy_verdict.recommended_content_types : [],
+        posting_frequency_suggestion: parsed.blog_strategy_verdict?.posting_frequency_suggestion || "",
+      },
+      summary: parsed.summary || "",
+      metrics: {
+        industry: parsed.metrics?.industry || "Bilinmiyor",
+        market_scope: parsed.metrics?.market_scope || "National",
+      },
+    };
+
+    return {
+      analysis,
+      _prompt: { template: promptTemplate, context: crawlDataJSON },
+    };
+  } catch (err) {
+    console.error("[DNA v3] Business analysis error:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+// ============================================================
+// 15. SCORE → GROWTH STAGE MAPPING
+// ============================================================
+function scoreToGrowthStage(score: number): string {
+  if (score >= 85) return "Usta";
+  if (score >= 70) return "Yetişkin";
+  if (score >= 55) return "Genç";
+  if (score >= 40) return "Çocuk";
+  if (score >= 25) return "Bebek";
+  return "Yeni Doğmuş";
 }

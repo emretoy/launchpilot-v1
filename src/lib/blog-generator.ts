@@ -1,5 +1,7 @@
 // ── Blog Generator — Prompt Builder + Imagen Helper + Scoring ──
 
+import { FORMAT_TEMPLATES, BLOG_MAIN_PROMPT } from "./blog-templates";
+
 // ── Interfaces ──
 
 export interface BlogSiteContext {
@@ -71,12 +73,55 @@ export function normalizeLegacyFormat(fmt: string | null | undefined): string {
   return LEGACY_FORMAT_MAP[fmt] || fmt;
 }
 
+export interface TopicDataForPrompt {
+  title: string;
+  funnel_stage?: string;
+  target_persona?: string;
+  suggested_cta?: string;
+  keywords?: string[];
+  search_intent?: string;
+  difficulty?: string;
+  content_type?: string;
+}
+
+export interface FormatRecommendationForPrompt {
+  recommendedFormat: string;
+  recommendedLength: number;
+  structure_tip?: string;
+}
+
+export interface DNAAnalysisForPrompt {
+  tone_and_voice?: {
+    recommended_blog_tone?: string;
+    brand_voice_keywords?: string[];
+  };
+  target_audience?: {
+    primary_audience?: string;
+    awareness_level?: string;
+  };
+  business_identity?: {
+    value_proposition?: string;
+    industry?: string;
+    brand_name?: string;
+  };
+  cta_structure?: {
+    recommended_blog_cta?: string;
+  };
+  revenue_model?: {
+    primary_conversion_action?: string;
+  };
+  content_language?: string;
+}
+
 export interface BlogGenerateRequest {
   topic: string;
   format: BlogContentType;
   targetLength: number;
   siteContext: BlogSiteContext;
   language?: string;
+  topicData?: TopicDataForPrompt;
+  formatRecommendation?: FormatRecommendationForPrompt;
+  dnaAnalysis?: DNAAnalysisForPrompt;
 }
 
 export interface BlogGenerateResult {
@@ -85,6 +130,7 @@ export interface BlogGenerateResult {
   seoChecklist: string[];
   suggestedTitle: string;
   suggestedMetaDesc: string;
+  suggestedAuthor: string;
   chosenFormat: string;
   error: string | null;
 }
@@ -92,6 +138,10 @@ export interface BlogGenerateResult {
 export interface ImagePlaceholder {
   description: string;
   tone: string;
+  type?: "cover" | "inline";
+  altText?: string;
+  overlayText?: string;
+  mood?: string;
 }
 
 export interface BlogScore {
@@ -115,8 +165,9 @@ export interface BlogScoreCriterion {
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
-const KIE_CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask";
-const KIE_POLL_URL = "https://api.kie.ai/api/v1/jobs/recordInfo";
+// Kie.ai GPT-4o Image API (eski: Grok Imagine)
+const KIE_CREATE_URL = "https://api.kie.ai/api/v1/gpt4o-image/generate";
+const KIE_POLL_URL = "https://api.kie.ai/api/v1/gpt4o-image/record-info";
 
 // ── Topic Suggestions ──
 
@@ -410,248 +461,164 @@ Eksik Veri Kuralı:
 
 // ── Blog Generation Prompt Builder ──
 
-const FORMAT_TEMPLATES: Record<BlogContentType, string> = {
-  "problem-solution": `ŞABLON: Problem-Çözüm
-YAPI:
-1. Başlık (H1) — Net, problem çözen
-2. Giriş (2-3 cümle) — Acıyı tanımla + "ne kazanacaksın" söyle
-3. Hemen Cevap — İlk %20'de ana çözümü ver
-4. 3-6 Adım Çözüm — Her adım 1 fikir + mini örnek
-5. [DENEYİM] kutusu — En az 1 yerde
-6. Özet + CTA — 2-3 cümle + tek aksiyon`,
-
-  rehber: `ŞABLON: Kapsamlı Kılavuz (Rehber)
-YAPI:
-1. Başlık (H1) — Konuyu kapsayan, net
-2. Giriş — Konunun önemi + yazıda ne bulacaksın
-3. Özet Kutusu — 3-4 maddelik kısa özet (snippet hedefi)
-4. Temel Tanım — Konuyu basitçe açıkla
-5. Neden Önemli? — 2-3 sebep
-6. 5-8 Alt Başlık Rehber — Her biri detaylı, örnekli
-7. Sık Yapılan Hatalar — 3-5 hata
-8. Araçlar/Kaynaklar — Öneriler
-9. [DENEYİM] kutuları — En az 2 yerde
-10. Özet + CTA`,
-
-  "vaka-calismasi": `ŞABLON: Başarı Hikayesi (Vaka Çalışması)
-YAPI:
-1. Başlık (H1) — Sonuç odaklı
-2. Giriş — Kim, ne hedefledi
-3. Hedef — Neyi başarmak istedi
-4. Süreç — Adım adım ne yapıldı
-5. Zorluklar — Karşılaşılan sorunlar
-6. Sonuç — Rakamlarla sonuç
-7. [DENEYİM] kutuları — En az 2 yerde
-8. Çıkarılan Dersler + CTA`,
-
-  karsilastirma: `ŞABLON: Karşılaştırma
-YAPI:
-1. Başlık (H1) — "X mi Y mi?" formatı
-2. Giriş — Neden bu karşılaştırma önemli
-3. X Özellikleri — Artıları/eksileri
-4. Y Özellikleri — Artıları/eksileri
-5. Karşılaştırma Tablosu — HTML tablo
-6. Hangi Durumda Hangisi? — Senaryo bazlı öneriler
-7. [DENEYİM] kutusu — 1 yerde
-8. CTA`,
-
-  "kontrol-listesi": `ŞABLON: Kontrol Listesi
-YAPI:
-1. Başlık (H1) — "X Kontrol Listesi" formatı
-2. Giriş — Neden bu listeye ihtiyaç var
-3. 7-12 Madde — Her madde kısa açıklamalı
-4. Her 3 maddede bir mini örnek veya ipucu
-5. [DENEYİM] kutusu — 1 yerde
-6. CTA`,
-
-  sss: `ŞABLON: Soru-Cevap (SSS)
-YAPI:
-1. Başlık (H1) — "X Hakkında Sık Sorulan Sorular"
-2. Giriş — 2-3 cümle bağlam
-3. 8-12 Soru-Cevap — Her cevap 2-4 cümle, basit dil
-4. Her 3 soruda bir detaylı açıklama veya örnek
-5. [DENEYİM] kutusu — 1 yerde
-6. Özet + CTA`,
-
-  liste: `ŞABLON: Liste (Sıralama İçeriği)
-YAPI:
-1. Başlık (H1) — "En İyi X", "X Önerisi" formatı
-2. Giriş — Neden bu liste hazırlandı, seçim kriterleri
-3. 5-15 Madde — Her madde H2/H3 başlık + 2-4 cümle açıklama
-4. Her maddede artı/eksi veya kısa değerlendirme
-5. Her 3-4 maddede mini karşılaştırma ipucu
-6. [DENEYİM] kutusu — 1-2 yerde
-7. Sonuç — Genel değerlendirme + CTA`,
-
-  hikaye: `ŞABLON: Hikaye (Anlatım İçeriği)
-YAPI:
-1. Başlık (H1) — Merak uyandıran, sonuç ima eden
-2. Hook (ilk paragraf) — Okuru içine çeken sahne/durum
-3. Bağlam — Kim, ne, neden (arka plan)
-4. Dönüm Noktası — Değişimin başladığı an
-5. Süreç — Neler yaşandı, hangi adımlar atıldı
-6. Sonuç — Somut çıktı, rakam veya duygu
-7. Çıkarılan Dersler — Okur için uygulanabilir 2-3 öğreti
-8. [DENEYİM] kutuları — En az 2 yerde
-9. CTA — Okuru aksiyona yönlendir`,
-
-  "teknik-analiz": `ŞABLON: Teknik Analiz (Uzman İçerik)
-YAPI:
-1. Başlık (H1) — Teknik, net, anahtar kelime odaklı
-2. Yönetici Özeti — 3-4 cümle, ana bulgular (snippet hedefi)
-3. Giriş — Problem tanımı, analiz kapsamı
-4. Metodoloji — Hangi veri/araçlar kullanıldı (kısa)
-5. Bulgular — 3-6 bölüm, her biri veri + yorum
-6. Karşılaştırma Tablosu — HTML tablo ile veri sunumu
-7. Teknik Detaylar — Kod snippet, formül veya diyagram açıklaması
-8. Sonuç & Öneriler — Bulgulara dayalı aksiyon maddeleri
-9. [DENEYİM] kutuları — En az 1 yerde (gerçek test/uygulama deneyimi)
-10. Kaynaklar + CTA`,
-};
+function buildFallbackDnaJson(ctx: BlogSiteContext): string {
+  return JSON.stringify({
+    tone_and_voice: {
+      recommended_blog_tone: ctx.blogTone || "samimi ve bilgilendirici",
+      brand_voice_keywords: [],
+    },
+    target_audience: {
+      primary_audience: ctx.targetAudience || null,
+      awareness_level: null,
+    },
+    business_identity: {
+      value_proposition: ctx.valueProposition || null,
+      industry: ctx.industry || "genel",
+      brand_name: ctx.brandName,
+    },
+    cta_structure: {
+      recommended_blog_cta: ctx.recommendedCta || null,
+    },
+    revenue_model: {
+      primary_conversion_action: null,
+    },
+    content_language: ctx.primaryLanguage || "tr",
+  }, null, 2);
+}
 
 export function buildBlogPrompt(req: BlogGenerateRequest): string {
-  const template = FORMAT_TEMPLATES[req.format];
-  const maxTokens = req.targetLength <= 1200 ? 2048 : req.targetLength <= 2000 ? 4096 : 8192;
-  const maxImages = req.targetLength <= 1200 ? 2 : req.targetLength <= 2000 ? 3 : 5;
+  // 1. DNA_ANALYSIS_JSON — content_language her zaman mevcut olmalı
+  let dnaJson: string;
+  if (req.dnaAnalysis) {
+    const dna = { ...req.dnaAnalysis };
+    // req.language (topic scan ayarı) her zaman DNA'dan öncelikli
+    dna.content_language = req.language || dna.content_language || req.siteContext.primaryLanguage || "tr";
+    dnaJson = JSON.stringify(dna, null, 2);
+  } else {
+    dnaJson = buildFallbackDnaJson(req.siteContext);
+  }
 
-  return `Sen profesyonel bir blog yazarısın. Aşağıdaki kurallara HARFI HARFINE uy.
+  // 2. TOPIC_JSON
+  const topicJson = req.topicData
+    ? JSON.stringify(req.topicData, null, 2)
+    : JSON.stringify({ title: req.topic }, null, 2);
 
-═══════════════════════════════════════
-SİTE BAĞLAMI
-═══════════════════════════════════════
-- Marka: ${req.siteContext.brandName}
-- Site türü: ${req.siteContext.siteType}
-- Sektör: ${req.siteContext.industry || "genel"}
-- Yazım dili: ${req.language === "en" ? "İngilizce" : req.language === "tr" ? "Türkçe" : req.language || req.siteContext.primaryLanguage || "Türkçe"}${req.siteContext.targetAudience ? `\n- Hedef kitle: ${req.siteContext.targetAudience}` : ""}${req.siteContext.blogTone ? `\n- Blog tonu: ${req.siteContext.blogTone}` : ""}${req.siteContext.valueProposition ? `\n- Değer teklifi: ${req.siteContext.valueProposition}` : ""}${req.siteContext.recommendedCta ? `\n- Önerilen CTA: ${req.siteContext.recommendedCta}` : ""}
+  // 3. FORMAT_JSON
+  const formatJson = req.formatRecommendation
+    ? JSON.stringify(req.formatRecommendation, null, 2)
+    : JSON.stringify({
+        recommendedFormat: req.format,
+        recommendedLength: req.targetLength,
+        structure_tip: "",
+      }, null, 2);
 
-═══════════════════════════════════════
-GÖREV
-═══════════════════════════════════════
-- Konu: "${req.topic}"
-- Format: ${req.format}
-- Hedef uzunluk: ~${req.targetLength} kelime
-- Maks görsel: ${maxImages} adet
+  // 4. FORMAT_TEMPLATE
+  const formatTemplate = FORMAT_TEMPLATES[req.format];
 
-═══════════════════════════════════════
-${template}
-═══════════════════════════════════════
-
-═══════════════════════════════════════
-İÇERİK KURALLARI
-═══════════════════════════════════════
-
-BAŞLIK:
-- Net, problem çözen, abartısız, tek vaat
-- 60 karakterden kısa
-- Rakamla desteklenebilir ("5 Yol", "7 Adım")
-
-GİRİŞ (HOOK):
-- İlk 2-3 cümle: acıyı tanımla
-- Okura "bu yazıda ne kazanacaksın" söyle
-- Heyecan yaratma ama merak uyandır
-
-İLK %20 = CEVAP:
-- Kritik bilgiyi en başa koy
-- Kısa özet + ana çözüm
-
-GÖVDE:
-- Her bölümde tek fikir + mini örnek
-- 3-6 adım/bölüm
-- Kısa paragraflar (2-4 cümle)
-
-KANIT & DENEYİM:
-- [DENEYİM] placeholder'ları koy — kullanıcı kendi sözleriyle dolduracak
-- Format: [DENEYİM: kısa açıklama — örn. "müşteri hikayesi", "kişisel gözlem", "rakamsal sonuç"]
-- En az 1, idealde 2-3 tane
-
-ÖZET + CTA:
-- 2-3 cümle özet
-- Tek CTA — net aksiyon ("Hemen başlayın", "Randevu alın" gibi)
-
-═══════════════════════════════════════
-SEO ZORUNLULUKLARI
-═══════════════════════════════════════
-- 1 adet H1 (başlık)
-- 3-8 adet H2 (ana bölümler)
-- Gerekirse H3 (alt bölümler)
-- İlk paragrafta konuyu özetle (featured snippet hedefi)
-- Internal link önerileri: <!-- INTERNAL-LINK: anchor text | önerilen hedef sayfa açıklaması -->
-- Her görsel için alt text
-
-═══════════════════════════════════════
-E-E-A-T
-═══════════════════════════════════════
-- Yazar bilgisi placeholder: <!-- AUTHOR: Yazar adı ve kısa bio buraya -->
-- Kaynaklar bölümü (en az 2 kaynak referansı)
-- Gerçek örnek veya senaryo (uydurmak yerine genel sektör bilgisi)
-
-═══════════════════════════════════════
-AI KOKUSUNU YOK ETME — YASAKLAR
-═══════════════════════════════════════
-ASLA kullanma:
-- "Bu bağlamda", "Özellikle", "Sonuç olarak", "Genel olarak", "Dolayısıyla"
-- "...oldukça önemlidir", "...büyük bir rol oynamaktadır", "...dikkate alınmalıdır"
-- "Hadi başlayalım!", "İşte size...", "Merak etmeyin!"
-- Gereksiz "Önemli Not:" veya "Dikkat:" kutuları
-- Her cümlenin aynı uzunlukta olması
-- Her paragrafın aynı yapıda olması
-
-ZORUNLU:
-- Her 2-3 paragrafta 1 kısa soru sor okura ("Bunu hiç denediniz mi?")
-- Cümle uzunlukları karışık — 5 kelimelik + 20 kelimelik yan yana
-- En az 1 yerde "eksik bilgi" itirafı ("Bu konuda herkesin farklı deneyimi var ama benim gördüğüm...")
-- Konuşma dili kullan — "yapmak lazım" > "yapılmalıdır"
-- İlk kişi tekil kullan ("Ben", "Bence")
-- ${req.language === "en" ? "Write in simple, conversational English. Explain technical terms in parentheses" : "Basit Türkçe, teknik terim varsa parantez içinde açıkla"}
-
-═══════════════════════════════════════
-GÖRSEL PLACEHOLDER'LARI
-═══════════════════════════════════════
-Görselin gelmesi gereken her yere şu formatı koy (${maxImages} adet):
-<!-- IMAGE: kısa görsel açıklaması | TON: ciddi/samimi/pratik/eğlenceli -->
-
-Ton seçimi:
-- Ciddi: kurumsal, finans, hukuk konuları
-- Samimi: kuaför, kafe, lokal işletme konuları
-- Pratik: rehber, nasıl yapılır konuları
-- Eğlenceli: lifestyle, trend, liste konuları
-
-═══════════════════════════════════════
-ÇIKTI FORMATI
-═══════════════════════════════════════
-Sadece temiz HTML döndür. Başka bir şey yazma.
-- <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, <strong>, <em>, <blockquote>, <table> kullan
-- CSS veya <style> ekleme
-- <html>, <head>, <body> ekleme
-- Markdown kullanma, sadece HTML
-
-İlk satır: <!-- TITLE: önerilen sayfa başlığı (60 char max) -->
-İkinci satır: <!-- META: önerilen meta description (155 char max) -->
-Sonra blog HTML'i başlar.`;
+  // Prompt: v2.4 ana prompt, 4 değişken inject
+  return BLOG_MAIN_PROMPT
+    .replace("{{DNA_ANALYSIS_JSON}}", dnaJson)
+    .replace("{{TOPIC_JSON}}", topicJson)
+    .replace("{{FORMAT_JSON}}", formatJson)
+    .replace("{{FORMAT_TEMPLATE}}", formatTemplate);
 }
 
 // ── Parse Helpers ──
 
 export function parseImagePlaceholders(html: string): ImagePlaceholder[] {
-  const regex = /<!-- IMAGE: (.+?) \| TON: (.+?) -->/g;
   const results: ImagePlaceholder[] = [];
+
+  // TİP 1: COVER-IMAGE: sahne | TEXT: metin | MOOD: atmosfer
+  const coverRegex = /<!-- COVER-IMAGE: (.+?) \| TEXT: (.+?) \| MOOD: (.+?) -->/g;
   let match;
-  while ((match = regex.exec(html)) !== null) {
+  while ((match = coverRegex.exec(html)) !== null) {
     results.push({
       description: match[1].trim(),
-      tone: match[2].trim(),
+      tone: "pratik",
+      type: "cover",
+      overlayText: match[2].trim(),
+      mood: match[3].trim(),
     });
   }
+
+  // TİP 2: IMAGE: sahne | ALT: alt text | TON: ton (v2.4)
+  const inlineRegex = /<!-- IMAGE: (.+?) \| ALT: (.+?) \| TON: (.+?) -->/g;
+  while ((match = inlineRegex.exec(html)) !== null) {
+    results.push({
+      description: match[1].trim(),
+      tone: match[3].trim(),
+      type: "inline",
+      altText: match[2].trim(),
+    });
+  }
+
+  // Eski fallback: IMAGE: sahne | TON: ton (zaten yakalanmamışları ekle)
+  const legacyRegex = /<!-- IMAGE: (.+?) \| TON: (.+?) -->/g;
+  while ((match = legacyRegex.exec(html)) !== null) {
+    const desc = match[1].trim();
+    // Zaten v2.4 regex ile yakalandıysa ekleme
+    if (!results.some((r) => r.description === desc)) {
+      results.push({
+        description: desc,
+        tone: match[2].trim(),
+        type: "inline",
+      });
+    }
+  }
+
+  // Gemini COVER-IMAGE formatını kullanmamışsa ilk görseli cover'a promote et
+  if (results.length > 0 && !results.some((r) => r.type === "cover")) {
+    results[0] = { ...results[0], type: "cover" };
+  }
+
   return results;
 }
 
-export function parseTitleAndMeta(html: string): { title: string; metaDesc: string } {
+export function parseTitleAndMeta(html: string): { title: string; metaDesc: string; author: string } {
   const titleMatch = html.match(/<!-- TITLE: (.+?) -->/);
   const metaMatch = html.match(/<!-- META: (.+?) -->/);
+  const authorMatch = html.match(/<!-- AUTHOR: (.+?) -->/);
   return {
     title: titleMatch?.[1]?.trim() || "",
     metaDesc: metaMatch?.[1]?.trim() || "",
+    author: authorMatch?.[1]?.trim() || "",
   };
+}
+
+// ── Cover Image Position Fix (Post-Processing) ──
+
+/**
+ * COVER-IMAGE (veya yoksa ilk IMAGE) comment'ini H1'den hemen sonraya taşır.
+ * Gemini bazen cover görseli giriş paragraflarından sonra koyuyor — bu fonksiyon düzeltir.
+ */
+export function ensureCoverImagePosition(html: string): string {
+  // COVER-IMAGE veya yoksa ilk IMAGE comment'ini bul
+  const coverMatch = html.match(/<!-- COVER-IMAGE:.*?-->/);
+  const targetComment = coverMatch ? coverMatch[0] : html.match(/<!-- IMAGE:.*?-->/)?.[0];
+
+  if (!targetComment) return html;
+
+  // H1 kapanış tag'ini bul
+  const h1CloseMatch = html.match(/<\/h1>/i);
+  if (!h1CloseMatch) return html;
+
+  const h1CloseIdx = html.indexOf(h1CloseMatch[0]);
+  const commentIdx = html.indexOf(targetComment);
+
+  // Zaten H1'den hemen sonra mı? (aralarında sadece whitespace varsa dokunma)
+  if (commentIdx > h1CloseIdx) {
+    const between = html.slice(h1CloseIdx + h1CloseMatch[0].length, commentIdx).trim();
+    if (between === "") return html;
+  }
+
+  // Mevcut yerinden kaldır
+  const withoutComment = html.replace(targetComment, "");
+
+  // H1'den sonraya ekle
+  const newH1Idx = withoutComment.indexOf(h1CloseMatch[0]);
+  const insertPos = newH1Idx + h1CloseMatch[0].length;
+
+  return withoutComment.slice(0, insertPos) + "\n" + targetComment + withoutComment.slice(insertPos);
 }
 
 // ── Humanize HTML (Post-Processing) ──
@@ -674,22 +641,23 @@ const AI_CLICHE_PATTERNS = [
  * Gemini HTML yerine markdown/düz metin döndürürse HTML'e çevirir.
  */
 export function ensureHtml(raw: string): string {
-  // Zaten HTML tag içeriyorsa dokunma
-  if (/<h[1-6][\s>]/i.test(raw) && /<\/p>/i.test(raw)) {
-    return raw;
-  }
-
   let html = raw;
 
-  // Code block wrapper'ı temizle
-  html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "");
+  // Code block wrapper'ı temizle (```html ... ```)
+  html = html.replace(/^```html?\s*\n?/i, "").replace(/\n?```\s*$/, "");
 
-  // Zaten HTML olabilir, tekrar kontrol
-  if (/<h[1-6][\s>]/i.test(html) && /<\/p>/i.test(html)) {
+  // HTML yoğunluk testi: yeterince HTML tag varsa dokunma
+  const hTags = (html.match(/<h[1-6][\s>]/gi) || []).length;
+  const pTags = (html.match(/<\/p>/gi) || []).length;
+  const mdHeadings = (html.match(/^#{1,6}\s+/gm) || []).length;
+  const mdBold = (html.match(/\*\*.+?\*\*/g) || []).length;
+
+  // Eğer HTML tag sayısı yeterliyse VE markdown heading yoksa → zaten HTML
+  if (hTags >= 3 && pTags >= 3 && mdHeadings === 0) {
     return html;
   }
 
-  // Markdown → HTML dönüşümü
+  // Markdown veya mixed content → tamamen dönüştür
   const lines = html.split("\n");
   const result: string[] = [];
   let inList: "ul" | "ol" | null = null;
@@ -707,6 +675,20 @@ export function ensureHtml(raw: string): string {
     // Boş satır
     if (!line.trim()) {
       closeList();
+      continue;
+    }
+
+    // Zaten HTML tag olan satır (h1, h2, p, ul, ol, table, blockquote, div, img) — olduğu gibi bırak
+    if (/^\s*<(h[1-6]|p|ul|ol|li|table|thead|tbody|tr|th|td|blockquote|div|img|figure|section)\b/i.test(line.trim())) {
+      closeList();
+      result.push(line);
+      continue;
+    }
+
+    // HTML comment (IMAGE, TITLE, META, INTERNAL-LINK, AUTHOR) — olduğu gibi bırak
+    if (line.trim().startsWith("<!--")) {
+      closeList();
+      result.push(line);
       continue;
     }
 
@@ -759,8 +741,8 @@ export function ensureHtml(raw: string): string {
       continue;
     }
 
-    // HTML comment (IMAGE, TITLE, META, INTERNAL-LINK, AUTHOR) — olduğu gibi bırak
-    if (line.trim().startsWith("<!--")) {
+    // Kapanış tag'i olan satır (</ul>, </ol>, </table> vb.) — olduğu gibi bırak
+    if (/^\s*<\//.test(line.trim())) {
       closeList();
       result.push(line);
       continue;
@@ -812,23 +794,79 @@ export function humanizeHtml(html: string): string {
   return result;
 }
 
-// ── Imagen Prompt Builder ──
+// ── Imagen Prompt Builder (v1.2) ──
 
-const TONE_STYLES: Record<string, string> = {
-  ciddi: "Profesyonel, temiz, minimal, stok fotoğraf tarzı. Düzenli masa, grafik, kurumsal ortam.",
-  samimi: "Sıcak, doğal, yakın çekim, insani. Sıcak ışık, doğal ortam.",
-  pratik: "Adım adım illüstrasyon, diyagram, infografik tarzı. Temiz, anlaşılır.",
-  "eğlenceli": "Renkli, dinamik, modern grafik tarzı. Parlak renkler, grafik öğeler.",
+// Kie.ai (Grok Imagine / xAI) metin render edemiyor
+const IMAGE_MODEL_SUPPORTS_TEXT = true;
+
+const TON_STIL_MAP: Record<string, string> = {
+  ciddi: "editorial studio photography, neutral tones, hard lighting, high contrast, 35mm lens",
+  samimi: "warm cozy photography, soft bokeh, golden hour lighting, 50mm lens, natural feel",
+  pratik: "clean product photography, soft even lighting, crisp details, 85mm lens, studio quality",
+  "eğlenceli": "vibrant lifestyle photography, dynamic angles, bright natural lighting, wide angle lens",
 };
 
+const SECTOR_STYLE_HINTS: Record<string, string> = {
+  "mobilya": "interior design staging, clean background",
+  "dekorasyon": "interior design staging, clean background",
+  "teknoloji": "tech product, gradient background, minimal",
+  "saas": "tech product, gradient background, minimal",
+  "yemek": "overhead flat lay, natural light, wooden surface",
+  "restoran": "overhead flat lay, natural light, wooden surface",
+  "sağlık": "clean white space, calming colors, medical",
+  "medikal": "clean white space, calming colors, medical",
+  "eğitim": "educational, colorful but professional",
+  "hizmet": "professional office environment",
+  "danışmanlık": "professional office environment",
+  "hukuk": "professional office environment",
+  "moda": "pastel tones, lifestyle, aesthetic composition",
+  "güzellik": "pastel tones, lifestyle, aesthetic composition",
+  "kuaför": "pastel tones, lifestyle, aesthetic composition",
+  "inşaat": "wide angle, structural detail, blue sky",
+  "mimarlık": "wide angle, structural detail, blue sky",
+  "gayrimenkul": "wide angle, structural detail, blue sky",
+};
+
+function getSectorHint(industry: string | null): string {
+  if (!industry) return "";
+  const lower = industry.toLowerCase();
+  for (const [key, hint] of Object.entries(SECTOR_STYLE_HINTS)) {
+    if (lower.includes(key)) return ` ${hint}.`;
+  }
+  return "";
+}
+
+/**
+ * v1.2 görsel prompt builder.
+ * Hem eski (description, tone, industry) hem yeni (ImagePlaceholder) format destekler.
+ * ÖNEMLİ: Grok Imagine Türkçe metni resme basıyor — prompt tamamen İngilizce ve kısa olmalı.
+ */
 export function buildImagePrompt(
-  description: string,
-  tone: string,
-  industry: string | null
+  descriptionOrPlaceholder: string | ImagePlaceholder,
+  tone?: string,
+  industry?: string | null
 ): string {
-  const toneStyle = TONE_STYLES[tone] || TONE_STYLES["pratik"];
-  const industryHint = industry ? ` ${industry} sektörü ile ilgili.` : "";
-  return `Blog görseli: ${description}. Stil: ${toneStyle}${industryHint} Profesyonel blog görseli. TEK bir görsel üret, kolaj/grid/bölünmüş/yan yana görsel yapma. Metin veya yazı içermez, temiz ve modern.`;
+  // Eski format: (description, tone, industry) — geriye uyumlu
+  if (typeof descriptionOrPlaceholder === "string") {
+    const toneStyle = TON_STIL_MAP[tone || "pratik"] || TON_STIL_MAP["pratik"];
+    const sectorHint = getSectorHint(industry ?? null);
+    return `${descriptionOrPlaceholder}, ${toneStyle},${sectorHint} photorealistic, single image, 16:9 aspect ratio, professional blog photo, no text, no words, no letters, no collage, no grid, no split image, no people, no faces, no watermarks`;
+  }
+
+  // Yeni format: ImagePlaceholder objesi
+  const p = descriptionOrPlaceholder;
+  const sectorHint = getSectorHint(industry ?? null);
+
+  // COVER-IMAGE — Metin overlay frontend CSS ile yapılacak, görselde metin olmasın
+  if (p.type === "cover") {
+    const mood = p.mood || "modern";
+    return `${p.description}, blog cover photo, ${mood} atmosphere,${sectorHint} with dark cinematic gradient fading from transparent at top to dark at bottom third, photorealistic, single image, 16:9 aspect ratio, high quality, no text, no words, no letters, no people, no faces, no watermarks, no collage`;
+  }
+
+  // IMAGE (inline content)
+  const toneStyle = TON_STIL_MAP[p.tone] || TON_STIL_MAP["pratik"];
+  const altHint = p.altText ? `, concept: ${p.altText}` : "";
+  return `${p.description}${altHint}, ${toneStyle},${sectorHint} photorealistic, single image, 16:9 aspect ratio, professional blog photo, no text, no words, no letters, no collage, no grid, no split image, no people, no faces, no watermarks`;
 }
 
 // ── Gemini API Helpers ──
@@ -860,7 +898,7 @@ export async function callGemini(
 }
 
 /**
- * kie.ai Nano Banana Pro (Gemini 3 Pro Image) ile görsel üretir.
+ * kie.ai GPT-4o Image API ile görsel üretir.
  * Asenkron: task oluştur → poll → sonuç URL'i döndür.
  */
 export async function callImageGen(
@@ -876,13 +914,11 @@ export async function callImageGen(
         Authorization: `Bearer ${kieApiKey}`,
       },
       body: JSON.stringify({
-        model: "nano-banana-pro",
-        input: {
-          prompt,
-          aspect_ratio: "16:9",
-          resolution: "1K",
-          output_format: "jpg",
-        },
+        prompt,
+        size: "3:2", // landscape (16:9'a en yakın)
+        nVariants: 1,
+        isEnhance: false,
+        enableFallback: false,
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -893,17 +929,17 @@ export async function callImageGen(
     }
 
     const createData = await createRes.json();
-    console.log("Kie.ai create response:", JSON.stringify(createData));
+    console.log("Kie.ai 4o create response:", JSON.stringify(createData));
     const taskId = createData?.data?.taskId;
     if (!taskId) {
       console.error("Kie.ai: taskId alınamadı", createData);
       return null;
     }
 
-    // 2. Poll — max 90 saniye, 5 saniye aralıkla
-    const maxAttempts = 18;
+    // 2. Poll — max 120 saniye, 10 saniye aralıkla (4o daha yavaş olabilir)
+    const maxAttempts = 12;
     for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
+      await new Promise((r) => setTimeout(r, 10000));
 
       const pollRes = await fetch(`${KIE_POLL_URL}?taskId=${taskId}`, {
         headers: { Authorization: `Bearer ${kieApiKey}` },
@@ -916,27 +952,27 @@ export async function callImageGen(
       }
 
       const pollData = await pollRes.json();
-      const state = pollData?.data?.state;
-      console.log(`Kie.ai poll #${i + 1}: state=${state}`, pollData?.data?.failMsg || "");
+      const data = pollData?.data;
+      const successFlag = data?.successFlag;
+      const progress = data?.progress;
+      console.log(`Kie.ai 4o poll #${i + 1}: success=${successFlag}, progress=${progress}`, data?.errorMessage || "");
 
-      if (state === "success") {
-        const resultJson = pollData.data.resultJson;
-        const parsed = typeof resultJson === "string" ? JSON.parse(resultJson) : resultJson;
-        const url = parsed?.resultUrls?.[0];
+      if (successFlag === 1) {
+        const url = data?.response?.resultUrls?.[0];
         return url || null;
       }
 
-      if (state === "fail") {
-        console.error("Kie.ai task failed:", pollData.data.failMsg);
+      if (data?.errorCode || data?.errorMessage) {
+        console.error("Kie.ai 4o task failed:", data.errorMessage);
         return null;
       }
-      // waiting, queuing, generating → devam et
+      // Henüz bitmedi → devam et
     }
 
-    console.error("Kie.ai: Timeout — task tamamlanmadı");
+    console.error("Kie.ai 4o: Timeout — task tamamlanmadı");
     return null;
   } catch (err) {
-    console.error("Kie.ai error:", err);
+    console.error("Kie.ai 4o error:", err);
     return null;
   }
 }
@@ -1111,4 +1147,28 @@ export function scoreBlog(html: string): BlogScore {
         : "Bu yazıyı yayınlamadan önce eksikleri tamamlayın.";
 
   return { total, level, levelLabel, levelMessage, criteria };
+}
+
+// ── BlogTopic → TopicDataForPrompt Helper ──
+
+export function buildTopicDataFromBlogTopic(topic: {
+  title: string;
+  funnel_stage?: string;
+  target_persona?: string;
+  suggested_cta?: string;
+  keywords?: string[];
+  search_intent?: string;
+  difficulty?: string;
+  content_type?: string;
+}): TopicDataForPrompt {
+  return {
+    title: topic.title,
+    funnel_stage: topic.funnel_stage || undefined,
+    target_persona: topic.target_persona || undefined,
+    suggested_cta: topic.suggested_cta || undefined,
+    keywords: topic.keywords || undefined,
+    search_intent: topic.search_intent || undefined,
+    difficulty: topic.difficulty || undefined,
+    content_type: topic.content_type || undefined,
+  };
 }

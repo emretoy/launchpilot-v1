@@ -5,7 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { OverallScoreCard, CategoryScoreCard } from "@/components/score-card";
-import { supabase } from "@/lib/supabase";
+import { PromptViewer } from "@/components/prompt-viewer";
+import { getBrowserSupabase } from "@/lib/supabase";
 import { normalizeRecKey } from "@/lib/treatment-plan";
 import type { FullAnalysisResult, CategoryScore, Recommendation, ScanHistoryEntry, ValidationSummary, TreatmentPlan, TreatmentPhase, WebsiteDNA, AuthoritySubScore } from "@/lib/types";
 
@@ -318,24 +319,24 @@ function DNAProfileSection({ dna }: { dna: WebsiteDNA }) {
       </div>
 
       {/* AI DNA Sentezi */}
-      {(dna.aiSynthesis.summary || dna.aiSynthesis.sophisticationScore !== null) && (
+      {(dna.aiAnalysis?.summary || dna.aiSynthesis.summary || dna.aiSynthesis.sophisticationScore !== null) && (
         <div className="rounded-xl bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 border border-indigo-200 p-5 mb-6">
           <h4 className="text-sm font-semibold text-indigo-800 mb-3 flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold">AI</span>
             DNA Sentezi
           </h4>
-          {dna.aiSynthesis.summary && (
-            <p className="text-sm leading-relaxed text-indigo-900 mb-4">{dna.aiSynthesis.summary}</p>
+          {(dna.aiAnalysis?.summary || dna.aiSynthesis.summary) && (
+            <p className="text-sm leading-relaxed text-indigo-900 mb-4">{dna.aiAnalysis?.summary || dna.aiSynthesis.summary}</p>
           )}
           <div className="flex items-center gap-4 flex-wrap">
-            {dna.aiSynthesis.sophisticationScore !== null && (
+            {(dna.aiAnalysis?.digital_maturity.sophistication_score ?? dna.aiSynthesis.sophisticationScore) !== null && (
               <div className="flex items-center gap-2 px-3 py-2 bg-white/60 rounded-lg">
                 <span className="text-xs text-indigo-600">Dijital Gelişmişlik</span>
-                <span className="text-xl font-bold text-indigo-900">{dna.aiSynthesis.sophisticationScore}</span>
+                <span className="text-xl font-bold text-indigo-900">{dna.aiAnalysis?.digital_maturity.sophistication_score ?? dna.aiSynthesis.sophisticationScore}</span>
                 <span className="text-xs text-indigo-400">/100</span>
               </div>
             )}
-            {dna.aiSynthesis.growthStage && (
+            {(dna.aiSynthesis.growthStage) && (
               <Badge className="bg-purple-100 text-purple-800 hover:bg-purple-100 text-sm px-3 py-1.5">
                 {dna.aiSynthesis.growthStage}
               </Badge>
@@ -527,8 +528,6 @@ function SiteHealthCard({ data }: { data: FullAnalysisResult }) {
 
 // ── AI Özeti Kartı ──
 function AISummaryCard({ summary, prompt }: { summary: string; prompt?: string | null }) {
-  const [showPrompt, setShowPrompt] = useState(false);
-
   return (
     <Card className="border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50 mb-6">
       <CardHeader>
@@ -539,23 +538,7 @@ function AISummaryCard({ summary, prompt }: { summary: string; prompt?: string |
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm leading-relaxed text-gray-700 whitespace-pre-line">{summary}</p>
-
-        {prompt && (
-          <>
-            <button
-              onClick={() => setShowPrompt(!showPrompt)}
-              className="text-xs text-purple-600 hover:text-purple-800 hover:underline flex items-center gap-1"
-            >
-              <span className={`transition-transform ${showPrompt ? "rotate-90" : ""}`}>&#9654;</span>
-              Kullanılan Prompt
-            </button>
-            {showPrompt && (
-              <pre className="text-xs bg-white/80 border border-purple-100 rounded-lg p-3 whitespace-pre-wrap break-words text-gray-600 max-h-64 overflow-y-auto">
-                {prompt}
-              </pre>
-            )}
-          </>
-        )}
+        {prompt && <PromptViewer label="Teknik Sağlık Özeti Prompt'u (Gemini)" prompt={prompt} />}
       </CardContent>
     </Card>
   );
@@ -2109,14 +2092,14 @@ function TreatmentComparison({ data }: { data: FullAnalysisResult }) {
 
   useEffect(() => {
     const domain = getDomain(data.crawl.basicInfo.finalUrl);
-    supabase
+    getBrowserSupabase()
       .from("scans")
       .select("overall_score, recommendation_keys, analyzed_at")
       .eq("domain", domain)
       .lt("analyzed_at", data.analyzedAt)
       .order("analyzed_at", { ascending: false })
       .limit(1)
-      .then(({ data: rows }) => {
+      .then(({ data: rows }: { data: any[] | null }) => {
         if (rows && rows.length > 0) {
           const row = rows[0];
           // recommendation_keys null ise (eski tarama) → gösterme
@@ -2446,14 +2429,14 @@ function ScanComparison({ data }: { data: FullAnalysisResult }) {
 
   useEffect(() => {
     const domain = getDomain(data.crawl.basicInfo.finalUrl);
-    supabase
+    getBrowserSupabase()
       .from("scans")
       .select("url, overall_score, category_scores, analyzed_at")
       .eq("domain", domain)
       .lt("analyzed_at", data.analyzedAt)
       .order("analyzed_at", { ascending: false })
       .limit(1)
-      .then(({ data: rows }) => {
+      .then(({ data: rows }: { data: any[] | null }) => {
         if (rows && rows.length > 0) {
           const row = rows[0];
           setPrevious({

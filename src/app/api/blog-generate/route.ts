@@ -5,6 +5,7 @@ import {
   parseImagePlaceholders,
   parseTitleAndMeta,
   ensureHtml,
+  ensureCoverImagePosition,
   humanizeHtml,
 } from "@/lib/blog-generator";
 import type { BlogGenerateRequest } from "@/lib/blog-generator";
@@ -36,15 +37,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Blog metni üretilemedi" }, { status: 500 });
     }
 
-    // Parse title & meta (ham çıktıdan)
-    const { title, metaDesc } = parseTitleAndMeta(raw);
+    // Parse title & meta & author (ham çıktıdan)
+    const { title, metaDesc, author } = parseTitleAndMeta(raw);
 
-    // Parse image placeholders (ham çıktıdan)
-    const imageDescriptions = parseImagePlaceholders(raw);
-
-    // Markdown → HTML fallback + humanize
+    // Markdown → HTML fallback + cover pozisyon düzeltme + humanize
     const asHtml = ensureHtml(raw);
-    const blogHtml = humanizeHtml(asHtml);
+    const positioned = ensureCoverImagePosition(asHtml);
+    const blogHtml = humanizeHtml(positioned);
+
+    // Parse image placeholders (işlenmiş HTML'den — description'lar tam eşleşsin)
+    const imageDescriptions = parseImagePlaceholders(blogHtml);
 
     // SEO checklist
     const seoChecklist = [
@@ -75,6 +77,7 @@ export async function POST(req: Request) {
       seoChecklist,
       suggestedTitle: title,
       suggestedMetaDesc: metaDesc,
+      suggestedAuthor: author,
       chosenFormat: formatLabels[body.format] || body.format,
       error: null,
       _prompt: prompt,

@@ -87,8 +87,12 @@ export function CategorySidebar() {
         {/* Blog */}
         <div className="mt-4">
           <Link
-            href="/blog-yaz"
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors text-muted-foreground hover:bg-muted/50 hover:text-foreground`}
+            href={`${basePath}/blog`}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+              pathname?.includes("/blog")
+                ? "bg-primary/10 text-primary font-medium"
+                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+            }`}
           >
             <span className="text-base">✍️</span>
             <span className="flex-1">Blog</span>
@@ -172,8 +176,12 @@ export function CategorySidebar() {
           </Link>
         ))}
         <Link
-          href="/blog-yaz"
-          className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs whitespace-nowrap bg-muted/50 text-muted-foreground"
+          href={`${basePath}/blog`}
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-colors ${
+            pathname?.includes("/blog")
+              ? "bg-primary text-primary-foreground font-medium"
+              : "bg-muted/50 text-muted-foreground"
+          }`}
         >
           <span>✍️</span>
           <span>Blog</span>

@@ -624,11 +624,11 @@ export function validateDNAData(
   }
 
   // ── 8. AI sentezi kontrolü ──
-  if (mutated.aiSynthesis.summary) {
+  if (mutated.aiAnalysis?.summary || mutated.aiSynthesis.summary) {
     checks.push({
       field: "dna.aiSynthesis",
       verified: true,
-      reason: "AI DNA sentezi başarılı",
+      reason: mutated.aiAnalysis ? "AI v3 iş analizi başarılı" : "AI DNA sentezi başarılı",
     });
   } else {
     checks.push({
@@ -636,6 +636,48 @@ export function validateDNAData(
       verified: false,
       reason: "AI DNA sentezi alınamadı — özet eksik",
     });
+  }
+
+  // ── 8b. aiAnalysis sophistication_score range kontrolü ──
+  if (mutated.aiAnalysis) {
+    const score = mutated.aiAnalysis.digital_maturity.sophistication_score;
+    if (score < 0 || score > 100) {
+      mutated.aiAnalysis.digital_maturity.sophistication_score = Math.max(0, Math.min(100, score));
+      checks.push({
+        field: "dna.aiAnalysis.sophistication_score",
+        verified: false,
+        reason: `sophistication_score aralık dışı (${score}) — 0-100'e düzeltildi`,
+      });
+    } else {
+      checks.push({
+        field: "dna.aiAnalysis.sophistication_score",
+        verified: true,
+        reason: `sophistication_score geçerli: ${score}`,
+      });
+    }
+  }
+
+  // ── 8c. aiAnalysis blog/ecommerce çapraz kontrol ──
+  if (mutated.aiAnalysis) {
+    const aiBlog = mutated.aiAnalysis.content_status.has_active_blog;
+    const dnaBlog = mutated.contentStructure.hasBlog;
+    if (aiBlog !== dnaBlog) {
+      checks.push({
+        field: "dna.aiAnalysis.has_active_blog",
+        verified: false,
+        reason: `Blog çapraz kontrol uyumsuzluğu: AI=${aiBlog}, heuristic=${dnaBlog}`,
+      });
+    }
+
+    const aiEcom = mutated.aiAnalysis.digital_maturity.has_real_ecommerce;
+    const dnaEcom = mutated.contentStructure.hasEcommerce;
+    if (aiEcom !== dnaEcom) {
+      checks.push({
+        field: "dna.aiAnalysis.has_real_ecommerce",
+        verified: false,
+        reason: `E-ticaret çapraz kontrol uyumsuzluğu: AI=${aiEcom}, heuristic=${dnaEcom}`,
+      });
+    }
   }
 
   // ── 9. B2B/B2C hedef kitle çapraz kontrol ──

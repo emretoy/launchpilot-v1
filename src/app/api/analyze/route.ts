@@ -8,7 +8,7 @@ import { checkSecurityHeaders } from "@/lib/security-headers";
 import { checkSafeBrowsing } from "@/lib/safe-browsing";
 import { checkDNS } from "@/lib/dns-checker";
 import { validateHTML } from "@/lib/html-validator";
-import { analyzePage } from "@/lib/page-analyzer";
+import { analyzePage, fetchAboutPageSummary } from "@/lib/page-analyzer";
 import { calculateScores } from "@/lib/scoring";
 import { generateRecommendations } from "@/lib/recommendations";
 import { buildTreatmentPlan, normalizeRecKey } from "@/lib/treatment-plan";
@@ -85,17 +85,30 @@ export async function POST(request: NextRequest) {
 
     // Phase 2: Crawl sonucuna bağlı analizler (crawler'ın HTML'ini kullan — ek HTTP isteği yok)
     const $ = cheerio.load(rawHtml);
-    const pageAnalysis = analyzePage($, rawHtml);
+    const pageAnalysis = analyzePage($, rawHtml, normalizedUrl);
 
     // Bot koruması veya engelleme durumunda HTML çok küçük olabilir → veri güvenilmez
     const crawlReliable = rawHtml.length > 5000;
 
-    // Phase 2.5: Website DNA Analizi
+    // Phase 2.3: About Page Fetch (paralel — DNA'ya paralel çalışır)
+    const aboutPagePromise = fetchAboutPageSummary(normalizedUrl, crawl.links.internal)
+      .catch((err) => {
+        console.error("About page fetch error (skipping):", err);
+        return null;
+      });
+
+    // Phase 2.5: Website DNA Analizi (about page paralel devam ederken başlıyor)
     let dna;
     try {
       dna = await analyzeWebsiteDNA(crawl, pageAnalysis, domainInfo, dns, ssl, rawHtml);
     } catch (err) {
       console.error("DNA analysis error (skipping):", err);
+    }
+
+    // About page sonucunu al ve businessSignals'a ata
+    const aboutPageSummary = await aboutPagePromise;
+    if (aboutPageSummary) {
+      pageAnalysis.businessSignals.aboutPageSummary = aboutPageSummary;
     }
 
     // Phase 2.7: Online Presence Tamamla (crawl sonrası veriler)
@@ -185,7 +198,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Phase 6: AI Özeti (opsiyonel — hata olursa null)
-    const aiResult = await generateAISummary(validatedScoring, recommendations, validatedCrawl, ssl, htmlValidation);
+    const aiResult = await generateAISummary(validatedScoring, recommendations, validatedCrawl, ssl, htmlValidation, dna);
     const aiSummary = aiResult.text;
     const aiPrompt = aiResult.prompt || null;
 

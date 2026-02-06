@@ -10,16 +10,17 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const { topic, siteContext } = body as {
+    const { topic, siteContext, topicData } = body as {
       topic: string;
       siteContext: BlogSiteContext;
+      topicData?: Record<string, unknown>;
     };
 
     if (!topic || !siteContext) {
       return NextResponse.json({ error: "Konu ve site bilgisi gerekli" }, { status: 400 });
     }
 
-    const prompt = buildRecommendPrompt(topic, siteContext);
+    const prompt = buildRecommendPrompt(topic, siteContext, topicData);
     const raw = await callGemini(prompt, apiKey, {
       temperature: 0.8,
       maxOutputTokens: 1024,

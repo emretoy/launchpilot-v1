@@ -13,7 +13,8 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import type { BlogTopic } from "@/lib/types";
-import type { BlogSiteContext } from "@/lib/blog-generator";
+import type { BlogSiteContext, DNAAnalysisForPrompt } from "@/lib/blog-generator";
+import { buildTopicDataFromBlogTopic } from "@/lib/blog-generator";
 
 // ── Constants ──
 
@@ -70,6 +71,7 @@ interface Props {
   siteContext: BlogSiteContext;
   selectedTopic: BlogTopic | null;
   onSelectTopic: (topic: BlogTopic | null) => void;
+  dnaAnalysis?: DNAAnalysisForPrompt;
 }
 
 // ── Main Component ──
@@ -81,6 +83,7 @@ export function BlogCalendar({
   siteContext,
   selectedTopic,
   onSelectTopic,
+  dnaAnalysis,
 }: Props) {
   const [frequency, setFrequency] = useState(1);
   const [viewMonth, setViewMonth] = useState(() => {
@@ -364,6 +367,8 @@ export function BlogCalendar({
                 initialTopic={selectedTopic.title}
                 autoMode
                 language={selectedTopic.language || undefined}
+                topicData={buildTopicDataFromBlogTopic(selectedTopic)}
+                dnaAnalysis={dnaAnalysis}
               />
             </div>
           </div>

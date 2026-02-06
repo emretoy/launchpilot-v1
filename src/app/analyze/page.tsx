@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function AnalyzePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    // sessionStorage'dan domain al ve /site/[domain]'e yönlendir
-    const url = sessionStorage.getItem("analyzedUrl");
+    // 1. Query param (?url=...) — yeni tab / direkt link için
+    // 2. sessionStorage fallback
+    const url = searchParams.get("url") || sessionStorage.getItem("analyzedUrl");
     if (url) {
       try {
         const inputUrl = url.startsWith("http") ? url : `https://${url}`;
@@ -20,7 +22,7 @@ export default function AnalyzePage() {
     } else {
       router.replace("/");
     }
-  }, [router]);
+  }, [router, searchParams]);
 
   return (
     <main className="min-h-screen flex items-center justify-center">

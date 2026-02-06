@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildImagePrompt, callImageGen } from "@/lib/blog-generator";
+import type { ImagePlaceholder } from "@/lib/blog-generator";
 
 export async function POST(req: Request) {
   const kieKey = process.env.KIE_API_KEY;
@@ -9,17 +10,37 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const { description, tone, industry } = body as {
+    const { description, tone, industry, type, altText, overlayText, mood } = body as {
       description: string;
       tone: string;
       industry: string | null;
+      type?: "cover" | "inline";
+      altText?: string;
+      overlayText?: string;
+      mood?: string;
     };
 
     if (!description) {
       return NextResponse.json({ error: "Görsel açıklaması gerekli", imageUrl: null }, { status: 400 });
     }
 
-    const prompt = buildImagePrompt(description, tone || "pratik", industry);
+    // v1.2: type alanı varsa yeni ImagePlaceholder formatıyla prompt oluştur
+    let prompt: string;
+    if (type) {
+      const placeholder: ImagePlaceholder = {
+        description,
+        tone: tone || "pratik",
+        type,
+        altText,
+        overlayText,
+        mood,
+      };
+      prompt = buildImagePrompt(placeholder, undefined, industry);
+    } else {
+      // Eski format fallback
+      prompt = buildImagePrompt(description, tone || "pratik", industry);
+    }
+
     const imageUrl = await callImageGen(prompt, kieKey);
 
     if (!imageUrl) {

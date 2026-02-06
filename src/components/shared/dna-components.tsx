@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { PromptViewer } from "@/components/prompt-viewer";
 import type { WebsiteDNA } from "@/lib/types";
 
 export const siteTypeLabels: Record<string, string> = {
@@ -87,6 +88,10 @@ export function DNABoolRow({ label, value }: { label: string; value: boolean }) 
 
 /** DNA'dan tek satır özet: "WordPress · E-ticaret · 3 yaşında · Türkiye" */
 export function getDNASummaryLine(dna: WebsiteDNA): string {
+  // v3: aiAnalysis varsa what_it_does kullan
+  if (dna.aiAnalysis?.business_identity.what_it_does) {
+    return dna.aiAnalysis.business_identity.what_it_does;
+  }
   const parts: string[] = [];
   if (dna.techStack.platform) parts.push(dna.techStack.platform);
   parts.push(siteTypeLabels[dna.identity.siteType] || dna.identity.siteType);
@@ -97,6 +102,8 @@ export function getDNASummaryLine(dna: WebsiteDNA): string {
 }
 
 export function DNAProfileSection({ dna }: { dna: WebsiteDNA }) {
+  const ai = dna.aiAnalysis;
+
   return (
     <section>
       <div className="rounded-2xl bg-gradient-to-br from-indigo-50 via-purple-50 to-cyan-50 border border-indigo-200 p-6 mb-6">
@@ -107,6 +114,9 @@ export function DNAProfileSection({ dna }: { dna: WebsiteDNA }) {
 
         <div className="text-center mb-5">
           <h3 className="text-2xl font-bold text-indigo-900 mb-2">{dna.identity.brandName}</h3>
+          {ai && (
+            <p className="text-sm text-indigo-700 mb-2 max-w-xl mx-auto">{ai.business_identity.what_it_does}</p>
+          )}
           <div className="flex items-center justify-center gap-2 flex-wrap">
             <Badge className="bg-indigo-100 text-indigo-800 hover:bg-indigo-100 text-sm px-3 py-1">
               {siteTypeLabels[dna.identity.siteType] || dna.identity.siteType}
@@ -181,6 +191,13 @@ export function DNAProfileSection({ dna }: { dna: WebsiteDNA }) {
           <DNABoolRow label="E-Ticaret" value={dna.contentStructure.hasEcommerce} />
         </DNADetailCard>
       </div>
+
+      {dna._prompts && (
+        <div className="space-y-2 mt-4">
+          {dna._prompts.gemini && <PromptViewer label="DNA Analiz Prompt'u (Gemini)" prompt={dna._prompts.gemini} />}
+          {dna._prompts.chatgpt && <PromptViewer label="DNA Doğrulama Prompt'u (ChatGPT)" prompt={dna._prompts.chatgpt} />}
+        </div>
+      )}
     </section>
   );
 }

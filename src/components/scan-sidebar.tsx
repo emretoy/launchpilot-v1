@@ -55,7 +55,7 @@ export function ScanSidebar({ currentUrl, onScanComplete }: ScanSidebarProps) {
       .eq("user_id", user.id)
       .order("analyzed_at", { ascending: false })
       .limit(100)
-      .then(({ data: rows }) => {
+      .then(({ data: rows }: { data: any[] | null }) => {
         if (rows) {
           const seen = new Set<string>();
           const unique: ScanEntry[] = [];

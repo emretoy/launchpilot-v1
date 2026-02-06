@@ -2,6 +2,7 @@
 
 import { useSiteContext } from "@/components/site/site-context";
 import { OverallScoreCard } from "@/components/score-card";
+import { PromptViewer } from "@/components/prompt-viewer";
 import { CATEGORIES, computeCategoryScore } from "@/lib/category-config";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AuthorityReportLike } from "@/components/shared/authority-report";
@@ -244,10 +245,13 @@ export function TamRaporPage() {
           <CardHeader>
             <CardTitle>AI Analiz</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground whitespace-pre-line leading-relaxed">
               {data.aiSummary}
             </p>
+            {data.aiPrompt && (
+              <PromptViewer label="Teknik Sağlık Özeti Prompt'u (Gemini)" prompt={data.aiPrompt} />
+            )}
           </CardContent>
         </Card>
       )}
@@ -264,6 +268,9 @@ function DNACompactSection({ dna }: { dna: WebsiteDNA }) {
     <Card>
       <CardHeader>
         <CardTitle>DNA Bilgileri</CardTitle>
+        {dna.aiAnalysis?.business_identity.what_it_does && (
+          <p className="text-sm text-muted-foreground mt-1">{dna.aiAnalysis.business_identity.what_it_does}</p>
+        )}
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -276,6 +283,12 @@ function DNACompactSection({ dna }: { dna: WebsiteDNA }) {
             <DNAItem label={"Sekt\u00f6r"} value={dna.identity.industry} />
           )}
         </div>
+        {dna._prompts && (
+          <div className="space-y-2 mt-4">
+            {dna._prompts.gemini && <PromptViewer label="DNA Analiz Prompt'u (Gemini)" prompt={dna._prompts.gemini} />}
+            {dna._prompts.chatgpt && <PromptViewer label="DNA Doğrulama Prompt'u (ChatGPT)" prompt={dna._prompts.chatgpt} />}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

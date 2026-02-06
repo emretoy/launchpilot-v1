@@ -53,9 +53,9 @@ export function SiteProvider({
           if (res.ok) {
             const json = await res.json();
             if (!cancelled) {
-              if (json.scan?.result_json && !cached) {
+              if (json.scan?.result_json) {
                 setData(json.scan.result_json as FullAnalysisResult);
-                // Cache'e de yaz
+                // Cache'i güncelle
                 sessionStorage.setItem(
                   `scanCache_${domain}`,
                   JSON.stringify(json.scan.result_json)
@@ -128,8 +128,8 @@ export function SiteProvider({
   );
 
   const rescan = useCallback(async () => {
-    if (!data || !session?.access_token) return;
-    const url = data.crawl.basicInfo.finalUrl || data.crawl.basicInfo.url;
+    if (!session?.access_token) return;
+    const url = data?.crawl.basicInfo.finalUrl || data?.crawl.basicInfo.url || `https://${domain}`;
     setLoading(true);
 
     try {

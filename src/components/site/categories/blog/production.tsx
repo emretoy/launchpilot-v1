@@ -3,7 +3,8 @@
 import { useState, useMemo } from "react";
 import { BlogGenerator } from "@/components/blog-generator";
 import type { BlogTopic } from "@/lib/types";
-import type { BlogSiteContext } from "@/lib/blog-generator";
+import type { BlogSiteContext, DNAAnalysisForPrompt } from "@/lib/blog-generator";
+import { buildTopicDataFromBlogTopic } from "@/lib/blog-generator";
 
 // ── Props ──
 
@@ -12,11 +13,12 @@ interface Props {
   siteContext: BlogSiteContext;
   selectedTopic: BlogTopic | null;
   onSelectTopic: (topic: BlogTopic | null) => void;
+  dnaAnalysis?: DNAAnalysisForPrompt;
 }
 
 // ── Main Component ──
 
-export function BlogProduction({ topics, siteContext, selectedTopic, onSelectTopic }: Props) {
+export function BlogProduction({ topics, siteContext, selectedTopic, onSelectTopic, dnaAnalysis }: Props) {
   // Planlanan konular (planned_date sırasıyla, yoksa relevance_score)
   const plannedTopics = useMemo(
     () =>
@@ -90,6 +92,8 @@ export function BlogProduction({ topics, siteContext, selectedTopic, onSelectTop
           <BlogGenerator
             siteContext={siteContext}
             initialTopic={selectedTopic.title}
+            topicData={buildTopicDataFromBlogTopic(selectedTopic)}
+            dnaAnalysis={dnaAnalysis}
           />
         ) : (
           <div className="border border-dashed border-gray-300 rounded-xl p-12 text-center text-gray-400">

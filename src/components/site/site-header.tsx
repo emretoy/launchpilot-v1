@@ -71,7 +71,7 @@ export function SiteHeader() {
           onClick={rescan}
           disabled={loading}
         >
-          {loading ? "Taranıyor..." : "Yeniden Tara"}
+          {loading ? "Taranıyor..." : data ? "Yeniden Tara" : "Siteyi Tara"}
         </Button>
         <AuthButton />
       </div>

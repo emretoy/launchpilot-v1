@@ -20,6 +20,9 @@ import type {
   BlogGenerateResult,
   ImagePlaceholder,
   BlogScore,
+  TopicDataForPrompt,
+  DNAAnalysisForPrompt,
+  FormatRecommendationForPrompt,
 } from "@/lib/blog-generator";
 
 // ── Types ──
@@ -31,11 +34,13 @@ interface Props {
   initialTopic?: string;
   autoMode?: boolean;
   language?: string;
+  topicData?: TopicDataForPrompt;
+  dnaAnalysis?: DNAAnalysisForPrompt;
 }
 
 // ── Main Component ──
 
-export function BlogGenerator({ siteContext, initialTopic, autoMode, language }: Props) {
+export function BlogGenerator({ siteContext, initialTopic, autoMode, language, topicData, dnaAnalysis }: Props) {
   const [step, setStep] = useState<Step>("topic");
   const [topic, setTopic] = useState("");
   const [recommendation, setRecommendation] = useState<BlogRecommendation | null>(null);
@@ -72,7 +77,7 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
           const res = await fetch("/api/blog-recommend", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ topic: initialTopic.trim(), siteContext }),
+            body: JSON.stringify({ topic: initialTopic.trim(), siteContext, topicData }),
           });
           if (!res.ok) {
             const data = await res.json();
@@ -106,7 +111,7 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
       const res = await fetch("/api/blog-recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: topic.trim(), siteContext }),
+        body: JSON.stringify({ topic: topic.trim(), siteContext, topicData }),
       });
 
       if (!res.ok) {
@@ -131,14 +136,20 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
   // Yazım prompt'unu STEP 2'de preview olarak göster
   const generatePromptPreview = useMemo(() => {
     if (!selectedFormat || !topic.trim()) return "";
+    const formatRecommendation: FormatRecommendationForPrompt | undefined = recommendation
+      ? { recommendedFormat: recommendation.recommendedFormat, recommendedLength: recommendation.recommendedLength, structure_tip: recommendation.structure_tip }
+      : undefined;
     return buildBlogPrompt({
       topic: topic.trim(),
       format: selectedFormat,
       targetLength: selectedLength,
       siteContext,
       language,
+      topicData,
+      formatRecommendation,
+      dnaAnalysis,
     });
-  }, [selectedFormat, selectedLength, topic, siteContext, language]);
+  }, [selectedFormat, selectedLength, topic, siteContext, language, topicData, dnaAnalysis, recommendation]);
 
   const handleGenerate = useCallback(async () => {
     if (!selectedFormat || !topic.trim()) return;
@@ -153,6 +164,9 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
 
     try {
       // ── Stage 1: Metin üret ──
+      const formatRecommendation: FormatRecommendationForPrompt | undefined = recommendation
+        ? { recommendedFormat: recommendation.recommendedFormat, recommendedLength: recommendation.recommendedLength, structure_tip: recommendation.structure_tip }
+        : undefined;
       const textRes = await fetch("/api/blog-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -162,6 +176,9 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
           targetLength: selectedLength,
           siteContext,
           language,
+          topicData,
+          formatRecommendation,
+          dnaAnalysis,
         }),
       });
 
@@ -175,27 +192,41 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
       if (blogData._prompt) setGeneratePrompt(blogData._prompt);
       const { _prompt: _gp, ...blogResult } = blogData as BlogGenerateResult & { _prompt?: string };
 
-      // Görselleri spinner placeholder'a çevir
+      // Görselleri spinner placeholder'a çevir — sadece eşleşenleri takip et
       let displayHtml = blogResult.blogHtml;
-      const placeholders = blogResult.imageDescriptions;
+      const allPlaceholders = blogResult.imageDescriptions;
+      const matchedIndexes: number[] = [];
 
-      for (let i = 0; i < placeholders.length; i++) {
-        const p = placeholders[i];
+      for (let i = 0; i < allPlaceholders.length; i++) {
+        const p = allPlaceholders[i];
+        // Her iki prefix'i de yakala — Gemini COVER-IMAGE yerine IMAGE kullanabilir
         const re = new RegExp(
-          `<!-- IMAGE: ${escapeRegex(p.description)}[^>]*-->`,
+          `<!-- (?:COVER-IMAGE|IMAGE): ${escapeRegex(p.description)}[^>]*-->`,
           "g"
         );
+        const idx = matchedIndexes.length;
+        const isCover = p.type === "cover";
+        const before = displayHtml;
         displayHtml = displayHtml.replace(
           re,
-          `<div id="blog-img-${i}" style="width:100%;aspect-ratio:16/9;background:#f3f4f6;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:20px 0;border:2px dashed #d1d5db;">
+          `<div id="blog-img-${idx}" style="position:relative;width:100%;aspect-ratio:16/9;background:#f3f4f6;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:20px 0;overflow:hidden;${isCover ? "" : "border:2px dashed #d1d5db;"}">
             <div style="text-align:center;color:#9ca3af;">
               <div style="font-size:28px;margin-bottom:8px;animation:spin 1s linear infinite;">&#9881;</div>
               <div style="font-size:13px;">Görsel yükleniyor...</div>
               <div style="font-size:11px;margin-top:4px;max-width:280px;">${p.description}</div>
             </div>
+            ${isCover && p.overlayText ? `<div data-cover-text="${p.overlayText.replace(/"/g, "&quot;")}" style="position:absolute;bottom:0;left:0;right:0;padding:32px 24px 24px;background:linear-gradient(to top,rgba(0,0,0,0.75) 0%,rgba(0,0,0,0.3) 60%,transparent 100%);"><span style="color:#fff;font-size:clamp(20px,3vw,36px);font-weight:700;line-height:1.2;text-shadow:0 2px 8px rgba(0,0,0,0.5);display:block;">${p.overlayText}</span></div>` : ""}
           </div>`
         );
+        // Sadece gerçekten eşleşen placeholder'ları say
+        if (displayHtml !== before) {
+          matchedIndexes.push(i);
+        }
       }
+
+      // Sadece eşleşen placeholder'lar için görsel üret
+      const placeholders = matchedIndexes.map((i) => allPlaceholders[i]);
+      blogResult.imageDescriptions = placeholders;
 
       htmlRef.current = displayHtml;
       blogResult.blogHtml = displayHtml;
@@ -214,9 +245,9 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
 
       // ── Stage 2: Görselleri arka planda üret ──
       if (placeholders.length > 0) {
-        // Görsel prompt'larını ÖNCEDEN oluştur (kie.ai'ye gönderilecek prompt'lar)
+        // Görsel prompt'larını ÖNCEDEN oluştur
         const previewPrompts = placeholders.map((p) =>
-          buildImagePrompt(p.description, p.tone, siteContext.industry)
+          buildImagePrompt(p, undefined, siteContext.industry)
         );
         setImagePrompts(previewPrompts);
 
@@ -228,9 +259,18 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
           siteContext.industry,
           (idx, imageUrl) => {
             // Her görsel hazır oldukça HTML'e yerleştir
-            const imgTag = `<img src="${imageUrl}" alt="${placeholders[idx].description}" style="width:100%;max-width:800px;height:auto;border-radius:12px;margin:20px 0;" />`;
+            const p = placeholders[idx];
+            const isCover = p.type === "cover" && p.overlayText;
+            const imgTag = isCover
+              ? `<div style="position:relative;width:100%;border-radius:12px;overflow:hidden;margin:20px 0;">
+                  <img src="${imageUrl}" alt="${p.description}" style="width:100%;height:auto;display:block;" />
+                  <div style="position:absolute;bottom:0;left:0;right:0;padding:32px 24px 24px;background:linear-gradient(to top,rgba(0,0,0,0.75) 0%,rgba(0,0,0,0.3) 60%,transparent 100%);">
+                    <span style="color:#fff;font-size:clamp(20px,3vw,36px);font-weight:700;line-height:1.2;text-shadow:0 2px 8px rgba(0,0,0,0.5);display:block;">${p.overlayText}</span>
+                  </div>
+                </div>`
+              : `<img src="${imageUrl}" alt="${p.description}" style="width:100%;max-width:800px;height:auto;border-radius:12px;margin:20px 0;" />`;
             const placeholderDiv = new RegExp(
-              `<div id="blog-img-${idx}"[\\s\\S]*?<\\/div>\\s*<\\/div>`,
+              `<div id="blog-img-${idx}"[\\s\\S]*?<\\/div>\\s*(?:<\\/div>\\s*){1,3}`,
               "g"
             );
             htmlRef.current = htmlRef.current.replace(placeholderDiv, imgTag);
@@ -254,7 +294,7 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
               </div>
             </div>`;
             const placeholderDiv = new RegExp(
-              `<div id="blog-img-${idx}"[\\s\\S]*?<\\/div>\\s*<\\/div>`,
+              `<div id="blog-img-${idx}"[\\s\\S]*?<\\/div>\\s*(?:<\\/div>\\s*){1,3}`,
               "g"
             );
             htmlRef.current = htmlRef.current.replace(placeholderDiv, failDiv);
@@ -288,7 +328,7 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
       setLoadingText(false);
       setLoadingImages(false);
     }
-  }, [selectedFormat, selectedLength, siteContext, topic]);
+  }, [selectedFormat, selectedLength, siteContext, topic, topicData, dnaAnalysis, recommendation]);
 
   async function handleCopyHtml() {
     if (!result) return;
@@ -507,7 +547,26 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
             )}
             <PromptViewer
               label="Görsel Üretim Prompt'u (kie.ai — önizleme)"
-              prompt={`Blog görseli: {görsel açıklaması}. Stil: {ton stili}. {sektör} sektörü ile ilgili. Profesyonel blog görseli. TEK bir görsel üret, kolaj/grid/bölünmüş/yan yana görsel yapma. Metin veya yazı içermez, temiz ve modern.`}
+              prompt={`── KAPAK GÖRSELİ (COVER-IMAGE) ──
+{sahne açıklaması}.
+Stil: Blog kapak görseli, yatay format (16:9 oran).
+Görselin alt üçte birlik kısmında metin için boş alan (negative space) bırak.
+Bu alan hafif karartılmış (dark overlay) olsun — üstüne UI'da metin basılacak.
+Strictly no text, no letters, no typography inside the image.
+Atmosfer: {mood}.
+{sektör} sektörü ile ilgili.
+Aspect ratio: strictly 16:9.
+Negative: No people, no faces, no hands, no distorted shapes, no watermarks, no cluttered backgrounds.
+
+── İÇERİK GÖRSELİ (IMAGE) ──
+{sahne açıklaması}.
+Concept hint: {alt text} (do not render this as text).
+Stil: {ton stili — ciddi/samimi/pratik/eğlenceli}.
+{sektör} sektörü ile ilgili.
+Aspect ratio: strictly 16:9.
+TEK bir görsel üret, kolaj/grid/bölünmüş/yan yana görsel yapma.
+Strictly no text, no letters, no words, no typography inside the image.
+Negative: No people, no faces, no hands, no distorted shapes, no watermarks, no cluttered backgrounds.`}
             />
           </CardContent>
         </Card>
@@ -596,14 +655,26 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
             dangerouslySetInnerHTML={{ __html: result.blogHtml }}
           />
 
+          {/* Ham HTML Kodu */}
+          <details className="rounded-lg border border-gray-200">
+            <summary className="px-4 py-3 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-50">
+              HTML Kodu
+            </summary>
+            <div className="bg-gray-950 p-4 rounded-b-lg overflow-auto max-h-[500px]">
+              <pre className="text-sm text-green-400 whitespace-pre-wrap break-words font-mono leading-relaxed">
+                {htmlRef.current || result.blogHtml}
+              </pre>
+            </div>
+          </details>
+
           {/* ═══ SEO & Detaylar (açılır) ═══ */}
           <details className="rounded-lg border border-gray-200">
             <summary className="px-4 py-3 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-50">
               SEO & Detaylar
             </summary>
             <div className="px-4 pb-4 space-y-4">
-              {/* Title & Meta */}
-              {(result.suggestedTitle || result.suggestedMetaDesc) && (
+              {/* Title & Meta & Author */}
+              {(result.suggestedTitle || result.suggestedMetaDesc || result.suggestedAuthor) && (
                 <div className="space-y-2">
                   {result.suggestedTitle && (
                     <div className="flex items-start gap-2">
@@ -617,6 +688,13 @@ export function BlogGenerator({ siteContext, initialTopic, autoMode, language }:
                       <Badge variant="outline" className="shrink-0">Meta</Badge>
                       <p className="text-sm text-gray-700 flex-1">{result.suggestedMetaDesc}</p>
                       <CopyButton text={result.suggestedMetaDesc} />
+                    </div>
+                  )}
+                  {result.suggestedAuthor && (
+                    <div className="flex items-start gap-2">
+                      <Badge variant="outline" className="shrink-0">Author</Badge>
+                      <p className="text-sm text-gray-700 flex-1">{result.suggestedAuthor}</p>
+                      <CopyButton text={result.suggestedAuthor} />
                     </div>
                   )}
                 </div>
@@ -728,6 +806,10 @@ async function generateImagesProgressive(
             description: p.description,
             tone: p.tone,
             industry,
+            type: p.type,
+            altText: p.altText,
+            overlayText: p.overlayText,
+            mood: p.mood,
           }),
         });
         const data = await res.json();

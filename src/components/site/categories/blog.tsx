@@ -8,7 +8,7 @@ import { BlogTopicDiscovery } from "./blog/topic-discovery";
 import { BlogCalendar } from "./blog/calendar";
 import { PromptViewer } from "@/components/prompt-viewer";
 import type { BlogTopic, BlogTopicScanRequest } from "@/lib/types";
-import type { BlogSiteContext } from "@/lib/blog-generator";
+import type { BlogSiteContext, DNAAnalysisForPrompt } from "@/lib/blog-generator";
 import { normalizeLegacyFormat } from "@/lib/blog-generator";
 
 // ── SessionStorage helpers ──
@@ -49,9 +49,7 @@ export function BlogPage() {
   const [selectedTopic, setSelectedTopic] = useState<BlogTopic | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
-  const [scanPrompt, setScanPrompt] = useState<string | null>(() => {
-    try { return sessionStorage.getItem(`blogScanPrompt_${domain}`) || null; } catch { return null; }
-  });
+  const [scanPrompt, setScanPrompt] = useState<string | null>(null);
   const [topicsLoaded, setTopicsLoaded] = useState(false);
 
   // SiteContext'ten BlogSiteContext türet
@@ -79,12 +77,41 @@ export function BlogPage() {
   const defaultCountry = lastTopic?.country || "us";
   const defaultLanguage = lastTopic?.language || "en";
 
-  // SessionStorage cache'den konuları yükle
+  // DNA Analysis objesi (v2.4 prompt injection için)
+  const dnaAnalysis: DNAAnalysisForPrompt | undefined = ai
+    ? {
+        tone_and_voice: {
+          recommended_blog_tone: ai.tone_and_voice?.recommended_blog_tone || undefined,
+        },
+        target_audience: {
+          primary_audience: ai.target_audience?.primary_audience || undefined,
+          awareness_level: ai.target_audience?.awareness_level || undefined,
+        },
+        business_identity: {
+          value_proposition: ai.business_identity?.value_proposition || undefined,
+          industry: data?.dna?.identity.industry || undefined,
+          brand_name: data?.dna?.identity.brandName || undefined,
+        },
+        cta_structure: {
+          recommended_blog_cta: ai.cta_structure?.recommended_blog_cta || undefined,
+        },
+        revenue_model: {
+          primary_conversion_action: ai.revenue_model?.primary_conversion_action || undefined,
+        },
+        content_language: data?.dna?.targetMarket.primaryLanguage || defaultLanguage,
+      }
+    : undefined;
+
+  // SessionStorage cache'den konuları ve scanPrompt'u yükle
   useEffect(() => {
     const cached = getTopicsCache(domain);
     if (cached.length > 0) {
       setTopics(ensureTopicIds(cached));
     }
+    try {
+      const cachedPrompt = sessionStorage.getItem(`blogScanPrompt_${domain}`);
+      if (cachedPrompt) setScanPrompt(cachedPrompt);
+    } catch {}
   }, [domain]);
 
   // Topics değiştiğinde cache'i otomatik güncelle
@@ -322,6 +349,7 @@ export function BlogPage() {
             siteContext={siteContext}
             selectedTopic={selectedTopic}
             onSelectTopic={setSelectedTopic}
+            dnaAnalysis={dnaAnalysis}
           />
         </TabsContent>
       </Tabs>
